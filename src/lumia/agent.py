@@ -126,7 +126,8 @@ class Agent:
         name = call.name
         arguments = dict(call.input or {})
         account = self._account_for(arguments)
-        level, reason = classify(name, arguments, account)
+        draft = self._draft_for(arguments)
+        level, reason = classify(name, arguments, account, draft)
 
         if level is AutonomyLevel.APPROVAL_REQUIRED:
             request = self.ws.approvals.submit(
@@ -136,8 +137,12 @@ class Agent:
                     reason=reason,
                     agent=self.role,
                     account_id=str(arguments.get("account_id", "")),
+                    project_id=str((draft or {}).get("project_id", "") or arguments.get("project_id", "")),
                 )
             )
+            # The draft stays in the ledger as held, not silently abandoned.
+            if draft is not None:
+                self.ws.comms.mark_awaiting_approval(str(draft["id"]), request.id)
             run.approvals_raised.append(request.id)
             run.tool_calls.append(
                 ToolCallLog(
@@ -180,6 +185,18 @@ class Agent:
         if not account_id:
             return None
         return self.ws.crm.get_account(str(account_id))
+
+    def _draft_for(self, arguments: dict[str, Any]) -> dict[str, Any] | None:
+        """The stored message a send is about to transmit.
+
+        Read from the ledger rather than from the call's arguments: the
+        gate screens what will actually go out, not what the call claims
+        it contains.
+        """
+        draft_id = arguments.get("draft_id")
+        if not draft_id:
+            return None
+        return self.ws.comms.get_communication(str(draft_id))
 
 
 def _tool_result(tool_use_id: str, payload: Any, is_error: bool = False) -> dict[str, Any]:

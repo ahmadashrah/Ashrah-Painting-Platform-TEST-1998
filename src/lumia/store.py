@@ -14,6 +14,7 @@ from typing import Any
 
 #: Collections the platform expects to exist.
 COLLECTIONS = (
+    # Growth side: accounts, pipeline and what was learned from working it.
     "accounts",
     "contacts",
     "interactions",
@@ -24,6 +25,17 @@ COLLECTIONS = (
     "proposals",
     "content",
     "quotes",
+    # Delivery side: projects, what the field reported and what was sent out.
+    "projects",
+    "project_contacts",
+    "crew",
+    "time_records",
+    "submissions",
+    "media",
+    "daily_logs",
+    "communications",
+    "open_items",
+    "escalations",
 )
 
 

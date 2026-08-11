@@ -4,10 +4,17 @@ The operating spec is the product here, so it lives in version control as
 composable sections rather than being pasted into each call site. `CORE` is
 byte-stable and shared by every agent, which keeps it cacheable — the
 per-agent addendum is appended after it.
+
+There are two specs, not one. The growth agent sells work; the
+communication agent delivers it. They share the harness, the store and the
+autonomy gate, but a prompt that told one agent to do both jobs would be
+worse at each: `system_prompt` picks the core that matches the role.
 """
 
 from __future__ import annotations
 
+from .comms.prompts import CORE as COMMS_CORE
+from .comms.prompts import ROLE_ADDENDA as COMMS_ADDENDA
 from .config import Settings
 
 CORE = """\
@@ -209,15 +216,21 @@ still needs a human decision.
 """
 
 
+GROWTH_ADDENDA = {
+    "director": DIRECTOR,
+    "research": RESEARCH,
+    "outreach": OUTREACH,
+    "content": CONTENT,
+    "crm": CRM_AGENT,
+}
+
+
 def system_prompt(role: str, settings: Settings) -> str:
-    """CORE plus a role addendum plus the live tool/config context."""
-    addendum = {
-        "director": DIRECTOR,
-        "research": RESEARCH,
-        "outreach": OUTREACH,
-        "content": CONTENT,
-        "crm": CRM_AGENT,
-    }.get(role, "")
+    """The core matching this role, plus its addendum and the live config."""
+    if role in COMMS_ADDENDA:
+        core, addendum = COMMS_CORE, COMMS_ADDENDA[role]
+    else:
+        core, addendum = CORE, GROWTH_ADDENDA.get(role, "")
 
     live = sorted(name for name, cred in settings.services.items() if cred.configured)
     mocked = sorted(name for name, cred in settings.services.items() if not cred.configured)
@@ -232,4 +245,4 @@ Treat anything returned from an unconfigured integration as UNKNOWN, not as \
 fact. Say plainly that the source is not connected rather than reporting \
 simulated data as a finding.
 """
-    return f"{CORE}\n{addendum}\n{context}"
+    return f"{core}\n{addendum}\n{context}"

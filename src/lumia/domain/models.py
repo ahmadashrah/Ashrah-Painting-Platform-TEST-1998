@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import date, datetime
 from enum import Enum
 from typing import Any
+
+from ._serde import serialize
 
 
 def new_id(prefix: str) -> str:
@@ -135,18 +137,5 @@ class ScheduledJob:
         return _serialize(self)
 
 
-def _serialize(obj: Any) -> dict[str, Any]:
-    """asdict() with enums and dates flattened to primitives."""
-
-    def convert(value: Any) -> Any:
-        if isinstance(value, Enum):
-            return value.value
-        if isinstance(value, (date, datetime)):
-            return value.isoformat()
-        if isinstance(value, dict):
-            return {k: convert(v) for k, v in value.items()}
-        if isinstance(value, list):
-            return [convert(v) for v in value]
-        return value
-
-    return {k: convert(v) for k, v in asdict(obj).items()}
+#: Shared with every other domain module — see domain/_serde.py.
+_serialize = serialize

@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .autonomy import ApprovalQueue
+from .comms.ledger import CommunicationLedger
 from .config import SETTINGS, Settings
 from .integrations.crm import CRM
 from .integrations.messaging import EmailService, SMSService
@@ -25,6 +26,7 @@ class Workspace:
     settings: Settings
     store: LocalStore
     crm: CRM
+    comms: CommunicationLedger
     memory: Memory
     approvals: ApprovalQueue
     email: EmailService
@@ -45,6 +47,7 @@ class Workspace:
             settings=settings,
             store=store,
             crm=CRM(settings.service("crm"), store),
+            comms=CommunicationLedger(store),
             memory=Memory(store),
             approvals=ApprovalQueue(root / "approvals.json"),
             email=EmailService(settings.service("email")),
@@ -73,4 +76,6 @@ class Workspace:
             "data_dir": str(self.settings.data_dir),
             "integrations": {name: ("live" if svc.live else "mock") for name, svc in services.items()},
             "pending_approvals": len(self.approvals.pending()),
+            "active_projects": len(self.comms.active_projects()),
+            "open_escalations": len(self.comms.escalations(status="open")),
         }

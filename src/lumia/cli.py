@@ -1,5 +1,7 @@
 """Command-line interface.
 
+Growth:
+
     lumia status
     lumia seed
     lumia pipeline
@@ -8,6 +10,17 @@
     lumia weekly --days 7
     lumia approvals list
     lumia approvals approve appr_abc123 --note "looks good" --execute
+
+Project communication:
+
+    lumia comms seed
+    lumia comms projects
+    lumia comms intake --project proj_abc123
+    lumia comms daily-log --project proj_abc123
+    lumia comms dispatch
+    lumia comms followups
+    lumia comms review --days 7 --metrics-only
+    lumia comms run "the super wants to know about tomorrow's access"
 """
 
 from __future__ import annotations
@@ -17,7 +30,10 @@ import json
 import sys
 from typing import Any
 
-from .agents import ROLES
+from .agents import COMMS_ROLES, GROWTH_ROLES
+from .comms.desk import CommunicationDesk
+from .comms.reporting import communication_review
+from .comms.seed import seed_demo_projects
 from .llm import MissingAPIKey
 from .orchestrator import Orchestrator
 from .reporting import growth_review
@@ -51,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
 
     run_cmd = sub.add_parser("run", help="give Lumia a task")
     run_cmd.add_argument("task", help="what you want done")
-    run_cmd.add_argument("--role", choices=ROLES, help="force a specialist instead of auto-routing")
+    run_cmd.add_argument("--role", choices=GROWTH_ROLES, help="force a specialist instead of auto-routing")
 
     daily = sub.add_parser("daily", help="run the daily operating cycle")
     daily.add_argument("--focus", default="", help="optional focus for today")
@@ -66,8 +82,13 @@ def main(argv: list[str] | None = None) -> int:
     approvals.add_argument("--note", default="")
     approvals.add_argument("--execute", action="store_true", help="run the action immediately on approval")
 
+    _add_comms_commands(sub)
+
     args = parser.parse_args(argv)
     ws = Workspace.build()
+
+    if args.command == "comms":
+        return _comms(ws, args)
 
     if args.command == "status":
         _print(ws.status())
@@ -104,6 +125,73 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
+def _add_comms_commands(sub: Any) -> None:
+    """The project-communication side of the CLI."""
+    comms = sub.add_parser("comms", help="project communication and reporting")
+    actions = comms.add_subparsers(dest="comms_command", required=True)
+
+    actions.add_parser("seed", help="load a demo project with an imperfect day on it")
+    actions.add_parser("projects", help="list projects and today's communication state")
+    actions.add_parser("followups", help="chase unanswered questions and failed deliveries")
+
+    intake = actions.add_parser("intake", help="process today's field submissions")
+    intake.add_argument("--project", default="", help="limit to one proj_... id")
+    intake.add_argument("--date", default="", help="ISO work date, defaults to today")
+
+    log = actions.add_parser("daily-log", help="compose and send the client daily log")
+    log.add_argument("--project", default="", help="limit to one proj_... id")
+    log.add_argument("--date", default="", help="ISO log date, defaults to today")
+
+    dispatch = actions.add_parser("dispatch", help="send the crew dispatch")
+    dispatch.add_argument("--project", default="", help="limit to one proj_... id")
+    dispatch.add_argument("--date", default="", help="ISO work date, defaults to today")
+
+    review = actions.add_parser("review", help="communication performance review")
+    review.add_argument("--days", type=int, default=7)
+    review.add_argument("--metrics-only", action="store_true", help="print metrics without calling the model")
+
+    run_cmd = actions.add_parser("run", help="give the communication agent a task")
+    run_cmd.add_argument("task", help="what you want done")
+    run_cmd.add_argument("--role", choices=COMMS_ROLES, help="force a specialist instead of auto-routing")
+
+
+def _comms(ws: Workspace, args: argparse.Namespace) -> int:
+    command = args.comms_command
+
+    if command == "seed":
+        _print(seed_demo_projects(ws))
+        return 0
+
+    if command == "projects":
+        _print(Toolbox(ws).call("list_projects", {}))
+        return 0
+
+    if command == "review" and args.metrics_only:
+        _print(communication_review(ws, days=args.days))
+        return 0
+
+    try:
+        desk = CommunicationDesk.build(ws)
+        if command == "intake":
+            run = desk.intake(project_id=args.project, work_date=args.date)
+        elif command == "daily-log":
+            run = desk.daily_logs(project_id=args.project, log_date=args.date)
+        elif command == "dispatch":
+            run = desk.dispatch(project_id=args.project, work_date=args.date)
+        elif command == "followups":
+            run = desk.followups()
+        elif command == "review":
+            run = desk.review(days=args.days)
+        else:
+            run = desk.handle(args.task, role=args.role)
+    except MissingAPIKey as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
+    _report_run(run)
+    return 0
+
+
 def _approvals(ws: Workspace, args: argparse.Namespace) -> int:
     if args.action == "list":
         pending = ws.approvals.pending()
@@ -129,7 +217,9 @@ def _approvals(ws: Workspace, args: argparse.Namespace) -> int:
     _print(record)
 
     if approved and args.execute:
-        result = Toolbox(ws).call(record["tool"], record["arguments"])
+        # Pass the approval id through so the action records who cleared it.
+        arguments = {**record["arguments"], "approval_id": record["id"]}
+        result = Toolbox(ws).call(record["tool"], arguments)
         ws.approvals.mark_executed(record["id"], result if isinstance(result, dict) else {"result": result})
         print("\nExecuted:")
         _print(result)
