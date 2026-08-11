@@ -12,7 +12,10 @@ from lumia.workspace import Workspace
 @pytest.fixture
 def settings(tmp_path) -> Settings:
     """Settings with every integration unconfigured, so nothing hits the network."""
-    names = ("crm", "email", "sms", "calendar", "search", "construction_data", "weather")
+    names = (
+        "crm", "email", "sms", "calendar", "search", "construction_data", "weather",
+        "operations", "timeclock",
+    )
     return Settings(
         anthropic_api_key="test-key",
         model="claude-opus-5",

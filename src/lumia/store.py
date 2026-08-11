@@ -24,6 +24,15 @@ COLLECTIONS = (
     "proposals",
     "content",
     "quotes",
+    # Delivery side: the scheduling agent's record of truth.
+    "projects",
+    "project_phases",
+    "employees",
+    "assignments",
+    "time_off",
+    "time_entries",
+    "equipment",
+    "equipment_bookings",
 )
 
 

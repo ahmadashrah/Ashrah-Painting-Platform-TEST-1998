@@ -34,6 +34,7 @@ from .domain.models import JobType, Surface, SurfaceCondition
 from .domain.pricing import build_quote, estimate_duration_days
 from .domain.scoring import prioritize, score_account
 from .memory import ImprovementProposal, Lesson
+from .scheduling_tools import SchedulingTools
 from .workspace import Workspace
 
 
@@ -106,13 +107,23 @@ class Toolbox:
     def has(self, name: str) -> bool:
         return name in self._tools
 
-    def call(self, name: str, arguments: dict[str, Any]) -> Any:
+    def call(self, name: str, arguments: dict[str, Any], approval_id: str = "") -> Any:
+        """Invoke a tool.
+
+        `approval_id` is set by the harness when a call is being replayed out
+        of the approval queue, and only then. A tool that can act on a
+        management exception declares an `approval_id` parameter and receives
+        it here — the value is always overwritten, so a model that puts one in
+        its own arguments cannot manufacture an approval.
+        """
         tool = self._tools.get(name)
         if tool is None:
             return {"error": f"unknown tool '{name}'"}
         signature = inspect.signature(tool.fn)
         accepted = {k: v for k, v in arguments.items() if k in signature.parameters}
         rejected = sorted(set(arguments) - set(accepted))
+        if "approval_id" in signature.parameters:
+            accepted["approval_id"] = approval_id
         try:
             result = tool.fn(**accepted)
         except Exception as exc:  # surfaced to the model as a tool error
@@ -657,6 +668,10 @@ class Toolbox:
 
     def _register_all(self) -> None:
         r = self.register
+
+        # The delivery side registers into the same box, so scheduling actions
+        # pass the same autonomy gate as growth actions.
+        SchedulingTools(self.ws).register_into(self)
 
         r(
             "find_accounts",

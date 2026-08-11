@@ -6,6 +6,10 @@
     lumia run "find property managers in Calgary with upcoming turnovers"
     lumia daily --focus "general contractors"
     lumia weekly --days 7
+    lumia schedule --start 2026-08-17
+    lumia schedule --plan-only
+    lumia monitor --report-only
+    lumia roster --date 2026-08-17
     lumia approvals list
     lumia approvals approve appr_abc123 --note "looks good" --execute
 """
@@ -60,6 +64,19 @@ def main(argv: list[str] | None = None) -> int:
     weekly.add_argument("--days", type=int, default=7)
     weekly.add_argument("--metrics-only", action="store_true", help="print metrics without calling the model")
 
+    schedule = sub.add_parser("schedule", help="run the crew scheduling cycle")
+    schedule.add_argument("--start", default="", help="ISO date to plan from (defaults to today)")
+    schedule.add_argument("--days", type=int, default=7)
+    schedule.add_argument("--focus", default="", help="optional focus for this cycle")
+    schedule.add_argument("--plan-only", action="store_true", help="print the proposed week without calling the model")
+
+    monitor = sub.add_parser("monitor", help="scheduling risks and variance")
+    monitor.add_argument("--days", type=int, default=14, help="how far ahead to look")
+    monitor.add_argument("--report-only", action="store_true", help="print the risk report without calling the model")
+
+    roster = sub.add_parser("roster", help="the crew roster, or availability on a date")
+    roster.add_argument("--date", default="", help="ISO date to check availability for")
+
     approvals = sub.add_parser("approvals", help="review the Level 3 approval queue")
     approvals.add_argument("action", choices=["list", "approve", "reject"])
     approvals.add_argument("request_id", nargs="?", default="")
@@ -84,8 +101,30 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "approvals":
         return _approvals(ws, args)
 
+    if args.command == "roster":
+        box = Toolbox(ws)
+        _print(
+            box.call("crew_availability", {"work_date": args.date})
+            if args.date
+            else box.call("list_crew", {})
+        )
+        return 0
+
+    # The deterministic reports run without a model call at all.
     if args.command == "weekly" and args.metrics_only:
         _print(growth_review(ws, days=args.days))
+        return 0
+
+    if args.command == "schedule" and args.plan_only:
+        _print(
+            Toolbox(ws).call(
+                "plan_seven_day_schedule", {"start_date": args.start, "days": args.days}
+            )
+        )
+        return 0
+
+    if args.command == "monitor" and args.report_only:
+        _print(Toolbox(ws).call("scheduling_risk_report", {"horizon_days": args.days}))
         return 0
 
     try:
@@ -94,9 +133,16 @@ def main(argv: list[str] | None = None) -> int:
             run = orchestrator.handle(args.task, role=args.role)
         elif args.command == "daily":
             run = orchestrator.daily_loop(focus=args.focus)
+        elif args.command == "schedule":
+            run = orchestrator.scheduling_cycle(start_date=args.start, focus=args.focus)
+        elif args.command == "monitor":
+            run = orchestrator.monitoring_pass(horizon_days=args.days)
         else:
             run = orchestrator.weekly_review(days=args.days)
     except MissingAPIKey as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    except ValueError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
 
@@ -129,7 +175,9 @@ def _approvals(ws: Workspace, args: argparse.Namespace) -> int:
     _print(record)
 
     if approved and args.execute:
-        result = Toolbox(ws).call(record["tool"], record["arguments"])
+        # The approval id travels into the tool, which is how a scheduling
+        # exception can execute at all. Nothing else can supply it.
+        result = Toolbox(ws).call(record["tool"], record["arguments"], approval_id=record["id"])
         ws.approvals.mark_executed(record["id"], result if isinstance(result, dict) else {"result": result})
         print("\nExecuted:")
         _print(result)

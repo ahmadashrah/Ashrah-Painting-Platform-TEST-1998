@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import date
 from typing import Any
 
 from .agent import Agent, AgentRun
@@ -35,6 +36,15 @@ ROUTING_HINTS: dict[str, tuple[str, ...]] = {
     "crm": (
         "crm", "clean up", "cleanup", "hygiene", "duplicate", "stage", "pipeline data",
         "next action", "tidy", "audit the records",
+    ),
+    "scheduler": (
+        "crew", "shift", "roster", "staffing", "staff the", "assign", "schedule",
+        "reschedule", "time off", "day off", "vacation", "overtime", "availability",
+        "site", "phase", "deficienc", "walkthrough", "job site", "deadline",
+        "clock in", "clock-in", "attendance",
+        # Longer, more specific forms of phrases the research agent also
+        # matches, so "who is on the crew" doesn't land on research.
+        "who is on", "who's on", "who is working", "who's working", "working on",
     ),
 }
 
@@ -118,6 +128,100 @@ waiting on a human, and the single most valuable thing to do next.
 """
         return self.agent("director").run(task, max_iterations=16)
 
+    # --- scheduling cycle -------------------------------------------------
+
+    def scheduling_cycle(self, start_date: str = "", focus: str = "") -> AgentRun:
+        """The Scheduling Agent's standing cycle.
+
+        State is pre-computed and handed over, for the same reason the daily
+        growth loop does it: the agent should spend its turns deciding, not
+        re-deriving numbers the engine already computed deterministically.
+        """
+        start = _parse_start(start_date)
+        state = {
+            "today": date.today().isoformat(),
+            "planning_from": start.isoformat(),
+            "risk_report": self.toolbox.call("scheduling_risk_report", {"horizon_days": 14}),
+            "projects_by_priority": self.toolbox.call("list_projects", {"limit": 15}),
+            "availability_today": self.toolbox.call(
+                "crew_availability", {"work_date": date.today().isoformat()}
+            ),
+            "proposed_week": self.toolbox.call(
+                "plan_seven_day_schedule", {"start_date": start.isoformat(), "days": 7}
+            ),
+            "pending_approvals": len(self.workspace.approvals.pending()),
+            "integrations": self.workspace.status()["integrations"],
+        }
+
+        task = f"""\
+Run the scheduling cycle.
+
+Here is the current state, already computed from the operations records —
+do not re-fetch it:
+
+{json.dumps(state, indent=2, default=str)}
+
+Work it in order:
+
+1. REVIEW — read the risk report first. Note what is already broken:
+   double-bookings, shifts on approved time off, unstaffed starts,
+   undeliverable deadlines, budget overruns, expiring certifications.
+2. GAPS — identify what information is missing, stale or contradictory. Say
+   exactly what is missing rather than working around it silently.
+3. RESOLVE — work the critical and high alerts in priority order. For each
+   conflict: the cause, who and what it affects, the operational and
+   financial impact, at least two options where they exist, your
+   recommendation and the trade-offs.
+4. SCHEDULE — turn the proposed week into real draft shifts for the work you
+   are authorized to schedule. Verify availability and qualification through
+   the tools before assigning anyone. Anything refused stays refused — report
+   the uncovered days honestly rather than forcing a fit.
+5. CONFIRM AND NOTIFY — confirm the shifts that are ready and brief those
+   crews. Do not brief anyone on a draft.
+6. ESCALATE — prepare, but do not execute, anything needing management
+   approval. State the proposed action and the reasoning.
+7. LEARN — close any ARE record where evidence has arrived, and record a
+   lesson only where the evidence genuinely supports one.
+
+{f'Additional focus: {focus}' if focus else ''}
+
+Finish with a short report: the schedule you produced and its status
+(draft or confirmed), the risks you could not resolve, what is waiting on a
+human, your confidence level, and when the schedule should next be reviewed.
+"""
+        return self.agent("scheduler").run(task, max_iterations=18)
+
+    def monitoring_pass(self, horizon_days: int = 14) -> AgentRun:
+        """Proactive monitoring: what is going wrong, ranked, with an owner."""
+        state = {
+            "risk_report": self.toolbox.call("scheduling_risk_report", {"horizon_days": horizon_days}),
+            "variance": self.toolbox.call("schedule_variance_report", {}),
+        }
+        task = f"""\
+Produce the scheduling monitoring report.
+
+These findings are computed from the operations records — treat them as
+KNOWN FACT and do not recompute or contradict them:
+
+{json.dumps(state, indent=2, default=str)}
+
+For every warning worth raising, give: what happened, why it matters, which
+projects and people it affects, the expected impact, the recommended
+action, whether it needs approval, and the deadline for deciding. Rank them
+critical, high, medium, low, and drop anything that does not earn a
+manager's attention — an alert nobody acts on trains people to ignore the
+next one.
+
+Then read the variance data. Where estimated and actual hours diverge
+consistently, say what the evidence supports changing — a duration
+estimate, a crew size, a productivity assumption or a risk buffer — and file
+it as an improvement proposal rather than applying it. Where the sample is
+too small or actuals are unverified, say so and leave the assumption alone.
+
+Label every conclusion KNOWN FACT, INFERENCE or UNKNOWN.
+"""
+        return self.agent("scheduler").run(task, max_iterations=10)
+
     # --- weekly growth review --------------------------------------------
 
     def weekly_review(self, days: int = 7) -> AgentRun:
@@ -144,3 +248,12 @@ alternatives. If the data shows part of the system itself is
 underperforming, file an improvement proposal.
 """
         return self.agent("director").run(task, max_iterations=10)
+
+
+def _parse_start(start_date: str) -> date:
+    if not start_date:
+        return date.today()
+    try:
+        return date.fromisoformat(start_date)
+    except ValueError as exc:
+        raise ValueError(f"start_date must be an ISO date, e.g. 2026-08-17 ({exc})") from exc

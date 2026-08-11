@@ -14,6 +14,7 @@ from .autonomy import ApprovalQueue
 from .config import SETTINGS, Settings
 from .integrations.crm import CRM
 from .integrations.messaging import EmailService, SMSService
+from .integrations.operations import OperationsSystem, Timeclock
 from .integrations.research import ConstructionData, WebSearch
 from .integrations.scheduling import CalendarService, WeatherService
 from .memory import Memory
@@ -33,6 +34,8 @@ class Workspace:
     weather: WeatherService
     search: WebSearch
     construction: ConstructionData
+    ops: OperationsSystem
+    timeclock: Timeclock
 
     @classmethod
     def build(cls, settings: Settings | None = None, data_dir: Path | None = None) -> "Workspace":
@@ -53,6 +56,8 @@ class Workspace:
             weather=WeatherService(settings.service("weather")),
             search=WebSearch(settings.service("search")),
             construction=ConstructionData(settings.service("construction_data")),
+            ops=OperationsSystem(settings.service("operations"), store),
+            timeclock=Timeclock(settings.service("timeclock")),
         )
 
     def status(self) -> dict[str, object]:
@@ -65,6 +70,8 @@ class Workspace:
             "weather": self.weather,
             "search": self.search,
             "construction_data": self.construction,
+            "operations": self.ops,
+            "timeclock": self.timeclock,
         }
         return {
             "model": self.settings.model,

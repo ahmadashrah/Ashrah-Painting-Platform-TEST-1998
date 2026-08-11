@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "lumia"
 version = "0.1.0"
-description = "Lumia — B2B marketing and growth agent for Ashrah Painting Ltd."
+description = "Lumia — growth and scheduling agents for Ashrah Painting Ltd."
 requires-python = ">=3.11"
 dependencies = [
     "anthropic>=0.69.0",

@@ -40,6 +40,8 @@ TOOL_LEVELS: dict[str, AutonomyLevel] = {
     "find_accounts": AutonomyLevel.AUTONOMOUS,
     "list_contacts": AutonomyLevel.AUTONOMOUS,
     "get_relationship_history": AutonomyLevel.AUTONOMOUS,
+    "build_account_brief": AutonomyLevel.AUTONOMOUS,
+    "priority_accounts": AutonomyLevel.AUTONOMOUS,
     "score_account_tool": AutonomyLevel.AUTONOMOUS,
     "pipeline_report": AutonomyLevel.AUTONOMOUS,
     "weekly_growth_review": AutonomyLevel.AUTONOMOUS,
@@ -60,12 +62,50 @@ TOOL_LEVELS: dict[str, AutonomyLevel] = {
     "set_next_action": AutonomyLevel.CONTROLLED,
     "advance_stage": AutonomyLevel.CONTROLLED,
     "upsert_opportunity": AutonomyLevel.CONTROLLED,
+    "save_content": AutonomyLevel.CONTROLLED,
     "send_followup_email": AutonomyLevel.CONTROLLED,
     "schedule_meeting": AutonomyLevel.CONTROLLED,
     # Level 3 — anything that speaks to the market for the first time.
     "send_first_contact_email": AutonomyLevel.APPROVAL_REQUIRED,
     "send_pricing_commitment": AutonomyLevel.APPROVAL_REQUIRED,
     "publish_content": AutonomyLevel.APPROVAL_REQUIRED,
+    # --- scheduling ---------------------------------------------------
+    # Level 1 — reading operations state, analysis, and drafting.
+    "list_projects": AutonomyLevel.AUTONOMOUS,
+    "find_projects": AutonomyLevel.AUTONOMOUS,
+    "get_project": AutonomyLevel.AUTONOMOUS,
+    "project_schedule": AutonomyLevel.AUTONOMOUS,
+    "list_crew": AutonomyLevel.AUTONOMOUS,
+    "get_crew_member": AutonomyLevel.AUTONOMOUS,
+    "crew_availability": AutonomyLevel.AUTONOMOUS,
+    "check_shift": AutonomyLevel.AUTONOMOUS,
+    "propose_crew": AutonomyLevel.AUTONOMOUS,
+    "plan_seven_day_schedule": AutonomyLevel.AUTONOMOUS,
+    "scheduling_risk_report": AutonomyLevel.AUTONOMOUS,
+    "schedule_variance_report": AutonomyLevel.AUTONOMOUS,
+    "check_exterior_weather": AutonomyLevel.AUTONOMOUS,
+    "draft_crew_message": AutonomyLevel.AUTONOMOUS,
+    # Level 2 — routine scheduling inside the rules the engine enforces.
+    # These are safe to automate precisely because `scheduling.py` refuses
+    # the unsafe cases outright rather than trusting the model to notice.
+    "upsert_project": AutonomyLevel.CONTROLLED,
+    "plan_project_phases": AutonomyLevel.CONTROLLED,
+    "update_phase_progress": AutonomyLevel.CONTROLLED,
+    "upsert_crew_member": AutonomyLevel.CONTROLLED,
+    "record_time_off": AutonomyLevel.CONTROLLED,
+    "assign_crew": AutonomyLevel.CONTROLLED,
+    "commit_week_plan": AutonomyLevel.CONTROLLED,
+    "confirm_shifts": AutonomyLevel.CONTROLLED,
+    "cancel_shift": AutonomyLevel.CONTROLLED,
+    "record_time_entry": AutonomyLevel.CONTROLLED,
+    "book_equipment": AutonomyLevel.CONTROLLED,
+    "send_crew_schedule": AutonomyLevel.CONTROLLED,
+    # Level 3 — management decisions: overriding a constraint, moving a
+    # client commitment, speaking to a client, or committing new cost.
+    "request_scheduling_exception": AutonomyLevel.APPROVAL_REQUIRED,
+    "postpone_project": AutonomyLevel.APPROVAL_REQUIRED,
+    "notify_client_schedule_change": AutonomyLevel.APPROVAL_REQUIRED,
+    "request_subcontractor": AutonomyLevel.APPROVAL_REQUIRED,
 }
 
 #: Outbound tools whose level depends on who is being contacted.

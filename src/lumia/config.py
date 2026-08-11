@@ -120,6 +120,20 @@ def load_settings() -> Settings:
             "OPENWEATHER_BASE_URL",
             "https://api.openweathermap.org/data/2.5",
         ),
+        # Projects, crews, shifts and time off — the delivery record of truth.
+        "operations": _service(
+            "operations",
+            "OPERATIONS_API_KEY",
+            "OPERATIONS_BASE_URL",
+            "https://api.example-operations.com/v1",
+        ),
+        # Clock-in / clock-out. Without it, attendance is UNKNOWN — never assumed.
+        "timeclock": _service(
+            "timeclock",
+            "TIMECLOCK_API_KEY",
+            "TIMECLOCK_BASE_URL",
+            "https://api.example-timeclock.com/v1",
+        ),
     }
 
     return Settings(

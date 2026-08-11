@@ -38,3 +38,7 @@ jobs:
           python -m lumia.cli seed
           python -m lumia.cli pipeline
           python -m lumia.cli weekly --metrics-only
+          python -m lumia.cli roster
+          python -m lumia.cli roster --date 2026-08-17
+          python -m lumia.cli schedule --plan-only
+          python -m lumia.cli monitor --report-only

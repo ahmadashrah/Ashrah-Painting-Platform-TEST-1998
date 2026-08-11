@@ -13,17 +13,21 @@ from ..llm import ClaudeClient
 from ..tools import Toolbox
 from ..workspace import Workspace
 
-#: Read-only and memory tools every role can use.
-COMMON = [
-    "find_accounts",
-    "get_account",
-    "get_relationship_history",
-    "build_account_brief",
+#: The ARE ledger and learning memory — shared by growth and delivery alike.
+MEMORY = [
     "recall_lessons",
     "open_are_record",
     "close_are_record",
     "record_lesson",
 ]
+
+#: Read-only and memory tools every growth role can use.
+COMMON = [
+    "find_accounts",
+    "get_account",
+    "get_relationship_history",
+    "build_account_brief",
+] + MEMORY
 
 ROLE_TOOLS: dict[str, list[str]] = {
     "director": COMMON
@@ -80,6 +84,44 @@ ROLE_TOOLS: dict[str, list[str]] = {
         "advance_stage",
         "upsert_opportunity",
         "score_account_tool",
+    ],
+    # Delivery. Deliberately holds no outreach or pipeline tools: the
+    # Scheduling Agent has no business emailing a prospect, and the growth
+    # roles have no business moving a crew.
+    "scheduler": MEMORY
+    + [
+        "get_account",
+        "list_projects",
+        "find_projects",
+        "get_project",
+        "project_schedule",
+        "list_crew",
+        "get_crew_member",
+        "crew_availability",
+        "check_shift",
+        "propose_crew",
+        "plan_seven_day_schedule",
+        "scheduling_risk_report",
+        "schedule_variance_report",
+        "check_exterior_weather",
+        "upsert_project",
+        "plan_project_phases",
+        "update_phase_progress",
+        "upsert_crew_member",
+        "record_time_off",
+        "assign_crew",
+        "commit_week_plan",
+        "confirm_shifts",
+        "cancel_shift",
+        "record_time_entry",
+        "book_equipment",
+        "draft_crew_message",
+        "send_crew_schedule",
+        "request_scheduling_exception",
+        "postpone_project",
+        "notify_client_schedule_change",
+        "request_subcontractor",
+        "propose_improvement",
     ],
 }
 
