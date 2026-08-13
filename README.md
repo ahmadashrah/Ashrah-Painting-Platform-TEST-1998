@@ -40,6 +40,47 @@ so a demo can never be mistaken for a real market read.
 
 ---
 
+## The control room
+
+A page that drives the send gate live: type a message, pick who it goes to,
+and watch it clear or get held.
+
+```bash
+PYTHONPATH=src python -m lumia.server     # http://localhost:8000
+```
+
+`docs/index.html` is self-contained and opens straight from the filesystem,
+carrying a JavaScript port of the screening rules so it works offline. When
+the server is running the page detects it and stops using that copy — the
+verdict then comes from `screening.py` itself, and it says which engine
+answered.
+
+The API is read-only and stateless by design. Anything hosted is reachable
+by whoever has the URL, so it exposes no project, client, contact or account
+data, and nothing on it can send a message, write a record or spend a token.
+
+| Route | |
+|---|---|
+| `GET /` | the control room |
+| `GET /api/health` | engine, agent count, which message kinds are routine |
+| `GET /api/agents` | every agent, its tools and its levels |
+| `POST /api/screen` | `{text, recipient_role, subject}` → would this need a human |
+| `POST /api/gate` | `{kind, recipient_role, body}` → the real send-gate verdict |
+
+**Deploying it.** `Procfile` and `railway.json` are committed, and the app
+is standard-library only, so a host needs no build step beyond installing
+`requirements.txt`. It binds `PORT` and `HOST` from the environment.
+
+```bash
+railway login && railway init && railway up
+```
+
+Setting `ANTHROPIC_API_KEY` in the host's variables is what makes the agents
+able to reason; without it the deployment still serves the control room and
+every deterministic rule.
+
+---
+
 ## The Communication Agent
 
 A crew lead sends a voice note in Arabic at 2am. By morning the client has a

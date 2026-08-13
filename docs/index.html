@@ -290,8 +290,32 @@ function screen(text, role) {
   return {external, findings};
 }
 
+// When served by lumia.server the real Python engine answers instead of the
+// port above, and rule edits stop applying — the server reads screening.py.
+let ENGINE = "browser";
+fetch("/api/health").then(r => r.ok ? r.json() : null).then(h => {
+  if (h && h.engine === "python") { ENGINE = "python"; render(); }
+}).catch(() => {});
+
+async function serverVerdict(kind, role, subject, body) {
+  const r = await fetch("/api/gate", {
+    method: "POST", headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({kind, recipient_role: role, subject, body})
+  });
+  if (!r.ok) throw new Error("gate request failed");
+  return r.json();
+}
+
 function render() {
   const text = $("body").value, role = roleSel.value, kind = kindSel.value;
+  if (ENGINE === "python") {
+    serverVerdict(kind, role, "", text)
+      .then(v => paint(text, role, kind, v.screening.findings.concat(v.screening.confidential_disclosures)
+              .map(f => ({cat: f.category, guide: f.guidance, trigger: f.trigger})),
+            v.level, v.reason, v.held, v.screening.external_recipient))
+      .catch(() => { ENGINE = "browser"; render(); });
+    return;
+  }
   const {external, findings} = screen(text, role);
   const kindOk = AUTO.includes(kind);
   const held = !kindOk || findings.length > 0;
@@ -307,28 +331,30 @@ function render() {
     level = 2;
     reason = `A '${kind}' message to a ${role.replace(/_/g," ")} with no approval triggers in its content.`;
   }
+  paint(text, role, kind, kindOk ? findings : [], level, reason, held, external);
+}
 
-  // highlight triggers in the message
-  let marked = text.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
-  if (kindOk) {
-    for (const f of findings) {
-      const t = f.trigger.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]))
-                         .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      marked = marked.replace(new RegExp(t, "i"), m => `<mark>${m}</mark>`);
-    }
+function paint(text, role, kind, findings, level, reason, held, external) {
+  const esc = s => s.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+  let marked = esc(text);
+  for (const f of findings) {
+    const t = esc(f.trigger).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    marked = marked.replace(new RegExp(t, "i"), m => `<mark>${m}</mark>`);
   }
 
   $("out").innerHTML = `
     <div class="verdict ${held ? "hold" : "pass"}">
       <h3>${held ? "Held for approval" : "Sends automatically"}</h3>
-      <div class="lvl">Level ${level} · recipient is ${external ? "external" : "internal"}</div>
-      <p style="margin:10px 0 0;font-size:14px">${reason}</p>
+      <div class="lvl">Level ${level} · recipient is ${external ? "external" : "internal"} · ${
+        ENGINE === "python" ? "decided by the Python engine" : "decided in the browser"}</div>
+      <p style="margin:10px 0 0;font-size:14px">${esc(reason)}</p>
       ${held ? `<p style="margin:8px 0 0;font-size:13px"><em>The agent is told plainly it did not send, so it reports that instead of claiming success.</em></p>` : ""}
-      ${findings.length && kindOk ? `<ul class="findings">${findings.map(f =>
-        `<li><span class="cat">${f.cat}</span> — ${f.guide}</li>`).join("")}</ul>` : ""}
+      ${findings.length ? `<ul class="findings">${findings.map(f =>
+        `<li><span class="cat">${esc(f.cat)}</span> — ${esc(f.guide)}</li>`).join("")}</ul>` : ""}
     </div>
-    ${findings.length && kindOk ? `<div style="margin-top:12px"><label>What tripped it</label>
+    ${findings.length ? `<div style="margin-top:12px"><label>What tripped it</label>
       <pre style="white-space:pre-wrap">${marked}</pre></div>` : ""}
+    ${ENGINE === "python" ? `<p class="sub" style="margin-top:10px;font-size:12.5px">Served by <code>lumia.server</code>, so this verdict came from <code>screening.py</code> itself. Rule edits below no longer change it — edit the Python.</p>` : ""}
   `;
 }
 
