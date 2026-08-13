@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lumia Control Room</title>
+<style>
+  :root {
+    --ground:#f4f5f3; --surface:#fff; --surface2:#eceee9; --ink:#16191b; --ink2:#5c646a;
+    --line:#d5d9d4; --accent:#1d5fa8; --accent-soft:#e4edf7;
+    --pass:#2c6e49; --pass-soft:#e3f0e8; --hold:#a8420e; --hold-soft:#fbe9e0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:#14171a; --surface:#1c2023; --surface2:#252c30; --ink:#e9edea; --ink2:#98a2a6;
+      --line:#2f373b; --accent:#6ba6e8; --accent-soft:#17293b;
+      --pass:#6dc49a; --pass-soft:#1a2f25; --hold:#e8875a; --hold-soft:#3a2319;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:#14171a; --surface:#1c2023; --surface2:#252c30; --ink:#e9edea; --ink2:#98a2a6;
+    --line:#2f373b; --accent:#6ba6e8; --accent-soft:#17293b;
+    --pass:#6dc49a; --pass-soft:#1a2f25; --hold:#e8875a; --hold-soft:#3a2319;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    background: var(--ground); color: var(--ink);
+    font: 15px/1.55 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+    margin: 0; padding: 24px 20px 64px;
+  }
+  .wrap { max-width: 940px; margin: 0 auto; display: flex; flex-direction: column; gap: 28px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 0 0 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--ink2); }
+  p { margin: 0 0 10px; }
+  .sub { color: var(--ink2); font-size: 14px; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 18px; }
+  .banner { background: var(--surface2); border: 1px solid var(--line); border-radius: 6px; padding: 12px 14px; font-size: 14px; }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } }
+
+  label { display: block; font-size: 12px; letter-spacing: .05em; text-transform: uppercase; color: var(--ink2); margin-bottom: 5px; }
+  textarea, select, input[type=text] {
+    width: 100%; background: var(--surface); color: var(--ink);
+    border: 1px solid var(--line); border-radius: 4px; padding: 9px 10px;
+    font: inherit;
+  }
+  textarea { min-height: 130px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  .row > div { flex: 1 1 190px; }
+
+  button {
+    background: var(--accent); color: #fff; border: 0; border-radius: 4px;
+    padding: 8px 14px; font: inherit; cursor: pointer;
+  }
+  button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--line); }
+
+  .verdict { border-radius: 6px; padding: 14px; border: 1px solid; }
+  .verdict.pass { background: var(--pass-soft); border-color: var(--pass); }
+  .verdict.hold { background: var(--hold-soft); border-color: var(--hold); }
+  .verdict h3 { margin: 0 0 6px; font-size: 17px; }
+  .verdict.pass h3 { color: var(--pass); }
+  .verdict.hold h3 { color: var(--hold); }
+  .lvl { font-family: ui-monospace, monospace; font-size: 12px; opacity: .85; }
+
+  ul.findings { list-style: none; padding: 0; margin: 10px 0 0; display: flex; flex-direction: column; gap: 8px; }
+  ul.findings li { font-size: 13px; border-top: 1px solid var(--line); padding-top: 8px; }
+  .cat { font-family: ui-monospace, monospace; font-weight: 600; }
+  mark { background: var(--hold); color: #fff; border-radius: 2px; padding: 0 2px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink2); font-weight: 600; }
+  td.num { font-variant-numeric: tabular-nums; font-family: ui-monospace, monospace; white-space: nowrap; }
+  .scroll { overflow-x: auto; }
+
+  .pill { display: inline-block; font-size: 11px; font-family: ui-monospace, monospace; padding: 1px 6px; border-radius: 3px; border: 1px solid var(--line); background: var(--surface2); }
+  .pill.l3 { background: var(--hold-soft); border-color: var(--hold); color: var(--hold); }
+
+  .rule { border-bottom: 1px solid var(--line); padding: 10px 0; }
+  .rule:last-child { border-bottom: 0; }
+  .rule-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 7px; }
+  .chip { font-family: ui-monospace, monospace; font-size: 11px; background: var(--surface2); border: 1px solid var(--line); border-radius: 3px; padding: 2px 5px; display: inline-flex; gap: 5px; align-items: center; }
+  .chip button { background: none; color: var(--ink2); padding: 0; font-size: 13px; line-height: 1; }
+  .add { display: flex; gap: 6px; margin-top: 8px; }
+  .add input { flex: 1; }
+  pre { background: var(--surface2); border: 1px solid var(--line); border-radius: 4px; padding: 12px; overflow-x: auto; font-size: 12.5px; margin: 0; }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+  <header>
+    <h1>Lumia Control Room</h1>
+    <p class="sub">Ashrah Painting Ltd. — 10 agents, 57 tools. Everything on this page runs the decision rules, not the model.</p>
+  </header>
+
+  <div class="banner">
+    <strong>Live agent runs are blocked:</strong> <code>ANTHROPIC_API_KEY</code> is not set in the session, so the agents can't reason or act.
+    The deterministic half — the send gate, content screening, verification, daily-log rendering, reports — works without it, and that's what you can drive here.
+  </div>
+
+  <!-- ============ GATE SIMULATOR ============ -->
+  <section class="card">
+    <h2>Send gate</h2>
+    <p class="sub">Type a message the way an agent would draft it. The gate checks the recipient, then the message kind, then the words — same order, same rules as <code>autonomy.py</code>.</p>
+
+    <div class="grid2" style="margin-top:14px">
+      <div>
+        <div class="row">
+          <div>
+            <label for="kind">Message kind</label>
+            <select id="kind"></select>
+          </div>
+          <div>
+            <label for="role">Recipient</label>
+            <select id="role"></select>
+          </div>
+        </div>
+        <label for="body">Message</label>
+        <textarea id="body">Work Completed Today
+- Surface preparation completed in the north corridor.
+- Primer applied to corridor walls.
+
+Plan for the Next Working Day
+- First finish coat is planned, subject to site readiness.</textarea>
+        <div class="row" style="margin-top:10px;margin-bottom:0">
+          <div style="flex:0 0 auto"><button id="tryPrice" class="ghost">Add a price</button></div>
+          <div style="flex:0 0 auto"><button id="tryDone" class="ghost">Claim it's complete</button></div>
+          <div style="flex:0 0 auto"><button id="reset" class="ghost">Reset</button></div>
+        </div>
+      </div>
+
+      <div id="out"></div>
+    </div>
+  </section>
+
+  <!-- ============ ROSTER ============ -->
+  <section class="card">
+    <h2>Agents</h2>
+    <p class="sub">Each role holds a restricted toolset. L1 runs freely, L2 runs within approved rules, L3 is always queued for a human.</p>
+    <div class="scroll" style="margin-top:12px">
+      <table>
+        <thead><tr><th>Agent</th><th>Does</th><th class="num">L1</th><th class="num">L2</th><th class="num">L3</th><th>Needs a human</th></tr></thead>
+        <tbody id="roster"></tbody>
+      </table>
+    </div>
+    <p class="sub" style="margin-top:12px"><code>send_communication</code> counts as L2 above, but it is the one tool resolved per call — its real level depends on the draft, which is what the panel above shows.</p>
+  </section>
+
+  <!-- ============ RULES ============ -->
+  <section class="card">
+    <h2>Screening rules</h2>
+    <p class="sub">The Level 3 list, as patterns. Edit these and the gate above re-runs immediately. <strong>Scope</strong> <code>all</code> screens every message; <code>external</code> screens only messages leaving the company, so a tentative question to a crew lead isn't gated.</p>
+    <div id="rules" style="margin-top:12px"></div>
+    <div style="margin-top:14px"><button id="export">Show as Python</button></div>
+    <pre id="exported" style="margin-top:12px;display:none"></pre>
+  </section>
+
+  <!-- ============ STATE ============ -->
+  <section class="card">
+    <h2>Where the code is</h2>
+    <p>Three agent workstreams exist on three branches, and they have not been merged:</p>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Branch</th><th>Agent</th><th>State</th></tr></thead>
+        <tbody>
+          <tr><td class="mono">claude/ai-agents-github-setup-pqm1kh</td><td>Lumia Marketing</td><td>the shared base both others build on</td></tr>
+          <tr><td class="mono">claude/lumia-communication-agent-hbpsaj</td><td>Communication Agent</td><td>pushed — this page describes it</td></tr>
+          <tr><td class="mono">claude/ashrah-scheduling-agent-j1cm72</td><td>Scheduling Agent</td><td>pushed, <strong>conflicts</strong></td></tr>
+        </tbody>
+      </table>
+    </div>
+    <p style="margin-top:12px">The conflict is real, not cosmetic: both the communication and scheduling branches add a file called <code>domain/projects.py</code>, and both define <code>Project</code> and <code>ProjectStatus</code> with different fields and different status values (<code>substantially_complete</code> vs <code>tentative</code>/<code>confirmed</code>/<code>deficiency</code>). They also both edit <code>autonomy.py</code>, <code>agents/__init__.py</code>, <code>cli.py</code>, <code>prompts.py</code>, <code>store.py</code> and <code>workspace.py</code>. Merging means deciding whether a project is one record both agents share, or two.</p>
+  </section>
+
+  <section class="card">
+    <h2>Driving it from the terminal</h2>
+    <pre>export PYTHONPATH=src
+
+python -m lumia.cli agents                  # this roster
+python -m lumia.cli screen "That will be $4,200."
+python -m lumia.cli gate send_communication --arg draft_id=comm_abc
+
+python -m lumia.cli comms seed              # a demo project with a bad day on it
+python -m lumia.cli comms intake            # needs an API key
+</pre>
+    <p class="sub" style="margin-top:12px">Or from Python: <code>from lumia import Lumia</code> — then <code>Lumia().agents()</code>, <code>.screen(...)</code>, <code>.gate(...)</code>, <code>.call(...)</code> all work with no key. Only <code>.ask()</code> and the named cycles need one.</p>
+  </section>
+
+</div>
+
+<script>
+// ---- ported from comms/screening.py. That file is the source of truth. ----
+const EXTERNAL = ["client","general_contractor","project_manager","superintendent","subcontractor","supplier"];
+const ROLES = EXTERNAL.concat(["employee","crew_lead","management"]);
+
+const KINDS = [
+  ["daily_log",1],["schedule_reminder",1],["arrival_notice",1],["confirmation_request",1],
+  ["clarification_request",1],["crew_dispatch",1],
+  ["client_update",0],["vendor_request",0],["escalation_notice",0],["commitment",0],["other",0]
+];
+const AUTO = KINDS.filter(k => k[1]).map(k => k[0]);
+
+const NEGATIONS = ["no","not","zero","nil","without","any"];
+
+let CATS = [
+  {name:"pricing", scope:"all", guide:"Price and cost information requires management approval.",
+   pats:["\\$\\s?\\d","\\bpric(?:e|es|ing)\\b","\\bcosts?\\b","\\bquot(?:e|es|ed|ation)\\b","\\binvoic(?:e|es|ing)\\b","\\bextra charge\\b","\\bhourly rate\\b"]},
+  {name:"change_order", scope:"all", guide:"Change-order language is contractual.",
+   pats:["\\bchange orders?\\b","\\bextra work\\b","\\badditional scope\\b","\\bscope change\\b"]},
+  {name:"contractual_commitment", scope:"all", guide:"Reads as a contractual commitment on Ashrah's behalf.",
+   pats:["\\bwe (?:guarantee|warrant|commit|undertake)\\b","\\bwarrant(?:y|ies)\\b","\\bwe agree to\\b","\\bcontractual(?:ly)?\\b"]},
+  {name:"completion_guarantee", scope:"all", guide:"A completion claim needs verification and approval.",
+   pats:["\\b100\\s?%\\s*(?:complete|completed|done|finished)\\b","\\bfully (?:complete|completed|finished)\\b","\\ball work is (?:complete|completed|done|finished)\\b","\\bsigned off\\b"]},
+  {name:"schedule_commitment", scope:"external", guide:"A firm date given to a client can carry financial consequences.",
+   pats:["\\bwe will (?:be )?(?:done|finished|complete[d]?)\\s+(?:by|on)\\b","\\bno later than\\b","\\bcompletion date\\b","\\bliquidated damages\\b"]},
+  {name:"fault_admission", scope:"all", guide:"Admitting — or denying — liability must never go out unapproved.",
+   pats:["\\bour (?:fault|mistake|error|negligence)\\b","\\bwe (?:damaged|caused|ruined|broke)\\b","\\bwe (?:are|were) (?:not )?(?:responsible|liable|at fault|to blame)\\b","\\bliab(?:le|ility)\\b"]},
+  {name:"dispute", scope:"all", guide:"Dispute-related communication is escalation territory.",
+   pats:["\\bdisputes?\\b","\\bback ?charges?\\b","\\bbreach of\\b","\\bdelay claim\\b","\\bwithhold(?:ing)? payment\\b"]},
+  {name:"legal_or_insurance", scope:"all", guide:"Legal and insurance matters go to management.",
+   pats:["\\blawyers?\\b","\\blegal (?:action|counsel|advice|notice)\\b","\\binsuran(?:ce|ce claim)\\b","\\bwcb\\b","\\bwsib\\b"]},
+  {name:"safety_incident", scope:"external", negatable:true, guide:"A safety incident follows the escalation process, not the daily log.",
+   pats:["\\binjur(?:y|ies|ed)\\b","\\baccidents?\\b","\\bambulance\\b","\\bhospital\\b","\\bnear ?miss\\b","\\bincident report\\b"]},
+  {name:"discipline", scope:"all", guide:"Employee disciplinary content requires approval.",
+   pats:["\\bdisciplinar(?:y|ily)\\b","\\bwritten warning\\b","\\bwrite[- ]up\\b","\\bmisconduct\\b"]},
+  {name:"termination", scope:"all", guide:"Termination notices require approval without exception.",
+   pats:["\\bterminat(?:e|ed|ing|ion)\\b","\\bdismiss(?:al|ed|ing)\\b","\\blaid off\\b"]},
+  {name:"refund_or_credit", scope:"all", guide:"Refunds and compensation are financial commitments.",
+   pats:["\\brefunds?\\b","\\bcompensat(?:e|ion|ing)\\b","\\breimburse(?:ment)?\\b","\\bfree of charge\\b","\\bat no (?:cost|charge)\\b"]},
+  {name:"serious_complaint", scope:"all", guide:"Serious complaints or hostility need a human first.",
+   pats:["\\bunacceptable\\b","\\bformal complaint\\b","\\bvery disappointed\\b","\\bthreat(?:en|ening|ened)\\b"]},
+  {name:"uncertainty", scope:"external", guide:"Uncertain statements must be resolved before a client sees them.",
+   pats:["\\bnot sure\\b","\\bi think\\b","\\bmaybe\\b","\\bunclear\\b","\\bunverified\\b","\\bassum(?:e|ed|ing|ption)\\b","\\bto be confirmed\\b","\\bpossibly\\b"]},
+  {name:"confidential_disclosure", scope:"external", guide:"Internal information must not reach an external recipient.",
+   pats:["\\bmargins?\\b","\\bmark[- ]?ups?\\b","\\bprofit(?:ability)?\\b","\\bpayroll\\b","\\bwages?\\b","\\bour cost\\b","\\baccess code\\b","\\balarm code\\b","\\bpasswords?\\b"]}
+];
+
+const AGENTS = [
+  ["intake","communication","Turns field submissions — any language, voice, photo — into verified facts",15,4,0,""],
+  ["client_comms","communication","Writes to clients, GCs, PMs and supers; owns the daily log",16,6,0,""],
+  ["crew_comms","communication","Dispatches crews and chases the missing detail",11,6,0,""],
+  ["vendor_comms","communication","Materials, deliveries and supplier coordination",10,5,1,"place_material_order"],
+  ["escalation","communication","Prepares what management needs to decide quickly",16,1,0,""],
+  ["director","growth","Owns the growth loop and decides where effort goes",12,4,0,""],
+  ["research","growth","Finds and qualifies opportunity from market signals",14,3,0,""],
+  ["outreach","growth","Writes and sends account-specific outreach",11,5,1,"send_first_contact_email"],
+  ["content","growth","Case studies, capability statements, project write-ups",11,0,1,"publish_content"],
+  ["crm","growth","Keeps the pipeline accurate and every account managed",12,6,0,""]
+];
+
+// ---- setup ----
+const $ = id => document.getElementById(id);
+const kindSel = $("kind"), roleSel = $("role");
+KINDS.forEach(([k,auto]) => kindSel.add(new Option(k.replace(/_/g," ") + (auto ? "" : "  — always needs a human"), k)));
+ROLES.forEach(r => roleSel.add(new Option(r.replace(/_/g," "), r)));
+roleSel.value = "project_manager";
+
+const DEFAULT_BODY = $("body").value;
+
+function negated(text, idx) {
+  const lead = text.slice(Math.max(0, idx - 24), idx).toLowerCase();
+  const words = lead.match(/[a-z]+/g);
+  return !!words && NEGATIONS.includes(words[words.length - 1]);
+}
+
+function screen(text, role) {
+  const external = EXTERNAL.includes(role);
+  const findings = [];
+  for (const cat of CATS) {
+    if (cat.scope === "external" && !external) continue;
+    for (const p of cat.pats) {
+      let re;
+      try { re = new RegExp(p, "gi"); } catch (e) { continue; }
+      let m, hit = null;
+      while ((m = re.exec(text)) !== null) {
+        if (cat.negatable && negated(text, m.index)) continue;
+        hit = m; break;
+      }
+      if (hit) { findings.push({cat: cat.name, guide: cat.guide, trigger: hit[0], index: hit.index}); break; }
+    }
+  }
+  return {external, findings};
+}
+
+function render() {
+  const text = $("body").value, role = roleSel.value, kind = kindSel.value;
+  const {external, findings} = screen(text, role);
+  const kindOk = AUTO.includes(kind);
+  const held = !kindOk || findings.length > 0;
+
+  let reason, level;
+  if (!kindOk) {
+    level = 3;
+    reason = `A '${kind}' message is not on the list of routine, repeatable communications approved for automatic sending. Its wording is not even reached.`;
+  } else if (findings.length) {
+    level = 3;
+    reason = "Message content requires human approval — " + findings.map(f => `${f.cat} ('${f.trigger}')`).join("; ") + ".";
+  } else {
+    level = 2;
+    reason = `A '${kind}' message to a ${role.replace(/_/g," ")} with no approval triggers in its content.`;
+  }
+
+  // highlight triggers in the message
+  let marked = text.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+  if (kindOk) {
+    for (const f of findings) {
+      const t = f.trigger.replace(/[&<>]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]))
+                         .replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      marked = marked.replace(new RegExp(t, "i"), m => `<mark>${m}</mark>`);
+    }
+  }
+
+  $("out").innerHTML = `
+    <div class="verdict ${held ? "hold" : "pass"}">
+      <h3>${held ? "Held for approval" : "Sends automatically"}</h3>
+      <div class="lvl">Level ${level} · recipient is ${external ? "external" : "internal"}</div>
+      <p style="margin:10px 0 0;font-size:14px">${reason}</p>
+      ${held ? `<p style="margin:8px 0 0;font-size:13px"><em>The agent is told plainly it did not send, so it reports that instead of claiming success.</em></p>` : ""}
+      ${findings.length && kindOk ? `<ul class="findings">${findings.map(f =>
+        `<li><span class="cat">${f.cat}</span> — ${f.guide}</li>`).join("")}</ul>` : ""}
+    </div>
+    ${findings.length && kindOk ? `<div style="margin-top:12px"><label>What tripped it</label>
+      <pre style="white-space:pre-wrap">${marked}</pre></div>` : ""}
+  `;
+}
+
+// ---- roster ----
+$("roster").innerHTML = AGENTS.map(([role, fam, does, l1, l2, l3, gated]) => `
+  <tr>
+    <td><span class="mono">${role}</span><br><span class="pill">${fam}</span></td>
+    <td style="font-size:13.5px">${does}</td>
+    <td class="num">${l1}</td><td class="num">${l2}</td><td class="num">${l3}</td>
+    <td>${gated ? `<span class="pill l3">${gated}</span>` : `<span class="sub">—</span>`}</td>
+  </tr>`).join("");
+
+// ---- rules editor ----
+function renderRules() {
+  $("rules").innerHTML = CATS.map((c, i) => `
+    <div class="rule">
+      <div class="rule-head">
+        <span class="cat">${c.name}</span>
+        <span class="pill">${c.scope}${c.negatable ? " · negatable" : ""}</span>
+      </div>
+      <div class="sub" style="font-size:13px">${c.guide}</div>
+      <div class="chips">
+        ${c.pats.map((p, j) => `<span class="chip">${p.replace(/[<>&]/g, ch => ({"&":"&amp;","<":"&lt;",">":"&gt;"}[ch]))}<button data-c="${i}" data-p="${j}" title="Remove">×</button></span>`).join("")}
+      </div>
+      <div class="add">
+        <input type="text" id="add-${i}" placeholder="add a pattern, e.g. \\bdeposit\\b">
+        <button class="ghost" data-add="${i}">Add</button>
+      </div>
+    </div>`).join("");
+
+  $("rules").querySelectorAll("button[data-p]").forEach(b => b.onclick = () => {
+    CATS[+b.dataset.c].pats.splice(+b.dataset.p, 1); renderRules(); render();
+  });
+  $("rules").querySelectorAll("button[data-add]").forEach(b => b.onclick = () => {
+    const i = +b.dataset.add, input = $("add-" + i), v = input.value.trim();
+    if (!v) return;
+    try { new RegExp(v); } catch (e) { input.value = ""; input.placeholder = "not a valid pattern — try again"; return; }
+    CATS[i].pats.push(v); renderRules(); render();
+  });
+}
+
+$("export").onclick = () => {
+  const py = CATS.map(c => `    Category(\n        "${c.name}",\n        ${c.scope.toUpperCase()},\n        "${c.guide}",\n        (\n${c.pats.map(p => `            r"${p.replace(/\\\\/g, "\\\\")}",`).join("\n")}\n        ),${c.negatable ? "\n        negatable=True," : ""}\n    ),`).join("\n");
+  const el = $("exported");
+  el.textContent = "# paste into CATEGORIES in src/lumia/comms/screening.py\nCATEGORIES = (\n" + py + "\n)";
+  el.style.display = "block";
+};
+
+// ---- demo buttons ----
+$("tryPrice").onclick = () => { $("body").value = DEFAULT_BODY + "\n\nThe extra ceiling work will be $4,200."; render(); };
+$("tryDone").onclick = () => { $("body").value = DEFAULT_BODY.replace("Primer applied to corridor walls.", "The north corridor is 100% complete."); render(); };
+$("reset").onclick = () => { $("body").value = DEFAULT_BODY; kindSel.value = "daily_log"; roleSel.value = "project_manager"; render(); };
+
+["input","change"].forEach(ev => {
+  $("body").addEventListener(ev, render);
+  kindSel.addEventListener(ev, render);
+  roleSel.addEventListener(ev, render);
+});
+
+renderRules();
+render();
+</script>
+
+</body>
+</html>
