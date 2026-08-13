@@ -7,7 +7,7 @@ import threading
 import time
 
 import pytest
-from conftest import FakeClient, calls_tool, text
+from conftest import FakeClient, PhaseClient, calls_tool, text
 
 from lumia.observability import (
     GATE_DECIDED,
@@ -66,12 +66,13 @@ def test_the_gate_decision_is_visible_with_its_reason(settings, tmp_path):
     runner = Runner(settings=settings, data_dir=tmp_path)
     workspace, _ = runner.build()
     project = seed_demo_projects(workspace)["project_id"]
-    runner.client_factory = lambda s: FakeClient([
+    # Ordering belongs to the prepare phase.
+    runner.client_factory = lambda s: PhaseClient({"prepare": [
         calls_tool("place_material_order", {
             "project_id": project, "supplier": "Priya Anand (DEMO)",
             "items": ["primer"], "delivery_location": "bay"}),
         text("Needs your approval."),
-    ])
+    ]})
 
     events: list[Event] = []
     HOOKS.subscribe(events.append, name="operator")

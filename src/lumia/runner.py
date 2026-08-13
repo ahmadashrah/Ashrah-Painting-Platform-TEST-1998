@@ -48,9 +48,10 @@ from .deadline import Deadline, budget_for
 from .domain.projects import new_id
 from .llm import build_client
 from .observability import (
-    HOOKS, RUN_FAILED, RUN_FINISHED, RUN_STARTED,
+    HOOKS, PHASE_FINISHED, PHASE_STARTED, RUN_FAILED, RUN_FINISHED, RUN_KILLED, RUN_STARTED,
     JsonlRecorder, KillSwitch, RunObserver,
 )
+from .phases import Phase, plan_for
 from .tools import Toolbox
 from .workspace import Workspace
 
@@ -200,6 +201,8 @@ class RunRecord:
     budget_seconds: float = 0.0
     timed_out: bool = False
     killed: bool = False
+    #: One entry per phase: what it was for, what it used, how it ended.
+    phases: list[dict[str, Any]] = field(default_factory=list)
     #: Always true. Recorded rather than assumed, so an audit does not have
     #: to take the docstring's word for it.
     isolated: bool = True
@@ -332,12 +335,13 @@ class Runner:
 
         try:
             with _watchdog(deadline.budget_seconds + WATCHDOG_GRACE_SECONDS, record.reference):
-                result: AgentRun = agent.run(
-                    task,
-                    max_iterations=max_iterations,
+                result = self._run_phases(
+                    agent=agent,
+                    record=record,
+                    task=task,
                     deadline=deadline,
                     observer=observer,
-                    kill_switch=switch,
+                    switch=switch,
                 )
         except HardTimeout as exc:
             record.status = "failed"
@@ -374,6 +378,116 @@ class Runner:
             error=record.error,
         )
         return record
+
+    # --- phases -----------------------------------------------------------
+
+    def _run_phases(
+        self,
+        agent: Any,
+        record: RunRecord,
+        task: str,
+        deadline: Deadline,
+        observer: RunObserver,
+        switch: KillSwitch,
+    ) -> AgentRun:
+        """Work the role's phases in order, inside one run.
+
+        Each phase is its own conversation holding only its own tools. What
+        carries forward is the previous phase's written result, not its
+        transcript — a phase hands the next its findings, which is what a
+        handoff is, and it keeps the context that reaches the model bounded.
+        """
+        phases = plan_for(agent.role, agent.allowed_tools)
+        combined = AgentRun(role=agent.role, task=task)
+        findings: list[str] = []
+        role_tools = list(agent.allowed_tools or [])
+
+        for index, phase in enumerate(phases, start=1):
+            if not phase.tools:
+                continue                      # this role holds none of them
+
+            # The phase loop stops for the same reasons the turn loop does, and
+            # must set the same flags — a run stopped between phases is just as
+            # killed as one stopped between turns, and reporting it as a clean
+            # finish would be the worst kind of quiet failure.
+            stop = switch.requested(record.reference)
+            if stop is not None:
+                combined.killed = True
+                combined.stopped_because = "killed"
+                combined.reply = (
+                    f"Stopped by an operator before the {phase.name} phase — "
+                    f"{stop.get('reason') or 'no reason given'}. "
+                    + (f"Completed phases: {', '.join(p['phase'] for p in record.phases)}. "
+                       if record.phases else "Nothing was done. ")
+                    + "Anything not listed did not happen."
+                )
+                observer.emit(RUN_KILLED, reason=str(stop.get("reason")), before=f"the {phase.name} phase")
+                break
+
+            if not deadline.usable:
+                combined.timed_out = True
+                combined.stopped_because = "deadline_exceeded"
+                combined.reply = (
+                    f"Stopped at the {deadline.budget_seconds:.0f}-second limit before the "
+                    f"{phase.name} phase. "
+                    + (f"Completed phases: {', '.join(p['phase'] for p in record.phases)}. "
+                       if record.phases else "Nothing was done. ")
+                    + "Anything not listed did not happen."
+                )
+                break
+
+            observer.emit(
+                PHASE_STARTED, phase=phase.name, index=index, of=len(phases),
+                goal=phase.goal, tools=", ".join(phase.tools),
+                remaining_seconds=deadline.remaining,
+            )
+
+            agent.allowed_tools = phase.tools
+            agent.phase = phase.name
+            outcome = agent.run(
+                _phase_prompt(task, phase, index, len(phases), findings),
+                max_iterations=phase.max_iterations,
+                deadline=deadline,
+                observer=observer,
+                kill_switch=switch,
+            )
+
+            combined.tool_calls.extend(outcome.tool_calls)
+            combined.approvals_raised.extend(outcome.approvals_raised)
+            combined.iterations += outcome.iterations
+            combined.reply = outcome.reply or combined.reply
+            combined.timed_out = combined.timed_out or outcome.timed_out
+            combined.killed = combined.killed or outcome.killed
+            combined.stopped_because = outcome.stopped_because
+
+            used = [c.tool for c in outcome.tool_calls if c.executed]
+            refused = [c.tool for c in outcome.tool_calls if "outside this phase" in c.result_summary]
+            record.phases.append({
+                "phase": phase.name,
+                "goal": phase.goal,
+                "index": index,
+                "available_tools": phase.tools,
+                "tools_used": used,
+                "tools_refused": refused,
+                "turns": outcome.iterations,
+                "stopped_because": outcome.stopped_because,
+                "result": outcome.reply,
+            })
+            observer.emit(
+                PHASE_FINISHED, phase=phase.name, index=index,
+                turns=outcome.iterations, used=", ".join(used) or "none",
+                refused=", ".join(refused), stopped=outcome.stopped_because,
+            )
+
+            if outcome.reply.strip():
+                findings.append(f"{phase.name}: {outcome.reply.strip()}")
+
+            if outcome.killed or outcome.timed_out:
+                break
+
+        agent.allowed_tools = role_tools
+        agent.phase = ""
+        return combined
 
     # --- history --------------------------------------------------------
 
@@ -432,3 +546,28 @@ class Runner:
 def _highest_run(workspace: Workspace) -> int:
     numbers = [int(r.get("number", 0) or 0) for r in workspace.store.list("runs")]
     return max(numbers, default=0)
+
+
+def _phase_prompt(task: str, phase: Phase, index: int, total: int, findings: list[str]) -> str:
+    """What one phase is asked to do, and what the last one found.
+
+    The tool list is stated rather than left implicit: an agent that knows
+    what it may reach for asks for the right thing, instead of proposing a
+    send from a gathering phase and being refused.
+    """
+    handoff = (
+        "\n\nWhat earlier phases established — treat as given, do not redo:\n"
+        + "\n".join(f"- {f}" for f in findings)
+        if findings else ""
+    )
+    return f"""\
+{task}
+
+--- Phase {index} of {total}: {phase.name} ---
+{phase.goal}
+
+In this phase you may use only: {', '.join(phase.tools) or 'no tools'}.
+Anything else is unavailable here and will be refused — later phases hold
+the rest. Do this phase's work, then stop and state plainly what you found
+or did, so the next phase can build on it.{handoff}
+"""

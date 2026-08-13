@@ -80,3 +80,26 @@ def calls_tool(tool: str, arguments: dict[str, Any], use_id: str = "toolu_1") ->
         content=[FakeBlock(type="tool_use", id=use_id, name=tool, input=arguments)],
         stop_reason="tool_use",
     )
+
+
+class PhaseClient:
+    """Replays responses per phase, so a scripted call lands where it belongs.
+
+    A phased run asks the model once per phase. A flat script would spend
+    its tool call on the first phase — which now refuses anything outside
+    that phase — so tests that exercise a specific tool key their responses
+    to the phase that holds it.
+    """
+
+    def __init__(self, by_phase: dict[str, list[FakeResponse]], default: str = "done") -> None:
+        self.by_phase = {k: list(v) for k, v in by_phase.items()}
+        self.default = default
+        self.requests: list[dict[str, Any]] = []
+
+    def create(self, *, system: str, messages: list[dict[str, Any]], tools=None, max_tokens: int = 0):
+        self.requests.append({"system": system, "messages": list(messages), "tools": tools})
+        prompt = str(messages[0].get("content", ""))
+        for phase, queued in self.by_phase.items():
+            if f": {phase} ---" in prompt and queued:
+                return queued.pop(0)
+        return FakeResponse(content=[FakeBlock(type="text", text=self.default)])

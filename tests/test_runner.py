@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from conftest import FakeClient, calls_tool, text
+from conftest import FakeClient, PhaseClient, calls_tool, text
 
 from lumia.runner import Runner
 
@@ -88,7 +88,8 @@ def test_a_run_starts_from_the_task_and_nothing_else(settings, tmp_path):
 
     second_messages = clients[1].requests[0]["messages"]
     assert len(second_messages) == 1
-    assert second_messages[0]["content"] == "SECOND TASK about Room 204"
+    # The phase wraps the task, but the task is what the phase is given.
+    assert "SECOND TASK about Room 204" in second_messages[0]["content"]
     # Nothing from the first run reached the second.
     transcript = str(clients[1].requests)
     assert "FIRST TASK" not in transcript
@@ -259,14 +260,15 @@ def test_records_carry_the_run_that_wrote_them(settings, tmp_path):
     project = seed_demo_projects(workspace)["project_id"]
 
     def factory(_settings):
-        return FakeClient([
+        # Escalating belongs to the resolve phase, so that is where it is scripted.
+        return PhaseClient({"resolve": [
             calls_tool("raise_escalation", {
                 "project_id": project, "category": "site_access",
                 "summary": "Access blocked all morning.", "evidence": "Field report.",
                 "impact": "Half a day lost.", "recommended_action": "Confirm the access window.",
             }),
             text("Escalated."),
-        ])
+        ]})
 
     runner.client_factory = factory
     record = runner.run("intake", "report the access problem")
@@ -283,13 +285,13 @@ def test_a_run_can_be_traced_to_everything_it_touched(settings, tmp_path):
     workspace, _ = runner.build()
     project = seed_demo_projects(workspace)["project_id"]
 
-    runner.client_factory = lambda s: FakeClient([
+    runner.client_factory = lambda s: PhaseClient({"track": [
         calls_tool("raise_open_item", {
             "project_id": project, "question": "Confirm the access window.",
             "asked_of": "Marcus Reyes (DEMO)",
         }),
         text("Asked."),
-    ])
+    ]})
     record = runner.run("crew_comms", "chase the access question")
 
     trace = runner.trace(record.reference)

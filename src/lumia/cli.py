@@ -175,9 +175,14 @@ def _facade(ws: Workspace, args: argparse.Namespace) -> int:
         if args.role:
             _print(lumia.tools(args.role))
             return 0
+        from .phases import describe
+
         for agent in lumia.agents(family=args.family):
             print(f"\n{agent.role}  [{agent.family}]")
             print(f"  {agent.purpose}")
+            phases = describe(agent.role)
+            if phases:
+                print("  phases: " + " → ".join(p["name"] for p in phases))
             print(f"  {len(agent.tools)} tools — "
                   f"L1 {len(agent.autonomous)} free, "
                   f"L2 {len(agent.controlled)} within rules, "
@@ -228,6 +233,9 @@ def _facade(ws: Workspace, args: argparse.Namespace) -> int:
                 + (f", {held} held" if held else "")
             )
             print(f"{'':<12} {str(record.get('task', ''))[:90]}")
+            done = [p["phase"] for p in record.get("phases") or []]
+            if done:
+                print(f"{'':<12} phases: {' → '.join(done)}")
         return 0
 
     if args.command == "screen":

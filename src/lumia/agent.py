@@ -17,7 +17,7 @@ from .autonomy import ApprovalRequest, AutonomyLevel, classify
 from .deadline import Deadline
 from .observability import (
     GATE_DECIDED, MODEL_REPLIED, RUN_KILLED, TOOL_EXECUTED, TOOL_GATED,
-    TOOL_PROPOSED, TURN_STARTED, Killed, RunObserver,
+    TOOL_PROPOSED, TOOL_REFUSED, TURN_STARTED, Killed, RunObserver,
 )
 from .llm import ClaudeClient, build_client, text_of, tool_uses
 from .prompts import system_prompt
@@ -77,6 +77,11 @@ class Agent:
         self.toolbox = toolbox
         self.client = client or build_client(workspace.settings)
         self.allowed_tools = allowed_tools
+        self.phase = ""
+
+    def _permitted(self, tool: str) -> bool:
+        """Whether this agent, in this phase, may run this tool at all."""
+        return self.allowed_tools is None or tool in self.allowed_tools
 
     @property
     def system(self) -> str:
@@ -215,11 +220,31 @@ class Agent:
     def _handle_tool_call(self, call: Any, run: AgentRun) -> dict[str, Any]:
         name = call.name
         arguments = dict(call.input or {})
-        account = self._account_for(arguments)
-        draft = self._draft_for(arguments)
         observer = getattr(self, "observer", None)
         if observer is not None:
             observer.emit(TOOL_PROPOSED, tool=name, arguments=json.dumps(arguments, default=str))
+
+        # Enforced here, not merely by leaving the schema out. Omitting a tool
+        # from the list sent to the model makes it unlikely to be called;
+        # checking at dispatch makes it impossible to run. In a phased run
+        # that difference is the whole guarantee — a gathering phase must not
+        # be able to send, however the request arrives.
+        if not self._permitted(name):
+            reason = (
+                f"'{name}' is not available in the {self.phase or 'current'} phase. "
+                f"Available here: {', '.join(self.allowed_tools or []) or 'none'}."
+            )
+            run.tool_calls.append(
+                ToolCallLog(tool=name, arguments=arguments, level=0, executed=False,
+                            reason=reason, result_summary="refused: outside this phase")
+            )
+            if observer is not None:
+                observer.emit(TOOL_REFUSED, tool=name, phase=self.phase, reason=reason)
+            log.warning("refused out-of-phase tool %s in phase %s", name, self.phase)
+            return _tool_result(call.id, {"error": reason, "not_performed": True}, is_error=True)
+
+        account = self._account_for(arguments)
+        draft = self._draft_for(arguments)
 
         level, reason = classify(name, arguments, account, draft)
 

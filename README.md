@@ -85,6 +85,56 @@ the approval queue.
 
 ---
 
+## Runs happen in phases
+
+A run used to be one long conversation holding every tool its role owned,
+from the first read to the last send. Now it moves through named phases, and
+each phase holds only the tools it needs.
+
+```
+1. gather     9 tools available | used: build_daily_log, list_field_submissions
+2. compose    3 tools available | used: compose_daily_log
+3. review     4 tools available | used: recommend_channel
+4. send       4 tools available | used: draft_communication, send_communication
+5. record     7 tools available | used: raise_open_item
+```
+
+Two things this buys.
+
+**It is watchable.** "The client agent did eleven things" says almost
+nothing; "it gathered, composed, reviewed, then sent" says where the run is
+and what should happen next. Every phase boundary is an event, and each
+phase's goal, available tools, tools used and result are recorded on the run.
+
+**A phase cannot reach past itself.** An agent gathering facts does not hold
+`send_communication`; one composing a log cannot order paint. A test asserts
+no role's first phase holds any sending tool at all.
+
+That restriction is enforced **at dispatch**, not by omitting the schema.
+Leaving a tool out of the list sent to the model makes it unlikely to be
+called; checking before running makes it impossible:
+
+```
+'send_communication' is not available in the gather phase.
+Available here: build_daily_log, communication_history, get_project, …
+```
+
+The refusal names what *is* available, because a refusal that does not just
+gets retried. This closed a real gap: `allowed_tools` had only ever filtered
+the schema list, and nothing checked it at dispatch.
+
+A phase hands the next its written result, not its transcript — the composer
+receives the gathered facts as findings. Phases share one run number, one
+time budget and one kill switch: five phases do not mean five times the 120
+seconds.
+
+Adding a phase is adding an entry to `phases.py`. Its tools are intersected
+with the role's own allowlist, so a plan can narrow a role and never widen
+it. A role with no plan runs as a single phase holding its whole toolset —
+new agents are unphased, never unable to run.
+
+---
+
 ## The operator's window
 
 Every step a run takes is an event, and an operator can watch them live or
@@ -550,7 +600,7 @@ fails if you forget.
 ## Development
 
 ```bash
-python -m pytest -q          # 289 tests, no network, no API key needed
+python -m pytest -q          # 304 tests, no network, no API key needed
 ```
 
 The suite drives the agent loop with a scripted fake client, so both gates,
