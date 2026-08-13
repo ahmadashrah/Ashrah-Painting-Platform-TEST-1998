@@ -155,6 +155,7 @@ class Lumia:
         state["can_run_agents"] = self.live
         state["agents"] = len(ROLE_TOOLS)
         state["tools"] = len(self.toolbox.names())
+        state["keys"] = self.keys()
         if not self.live:
             state["blocked"] = (
                 "ANTHROPIC_API_KEY is not set, so the agents cannot reason or act on their "
@@ -162,6 +163,44 @@ class Lumia:
                 "daily-log rendering, reports and seeding — still runs."
             )
         return state
+
+    def keys(self) -> dict[str, Any]:
+        """Which credentials are set, and the exact variable for each gap.
+
+        "email: mock" tells you something is missing; it does not tell you
+        what to type. This does.
+        """
+        report: dict[str, Any] = {
+            "ANTHROPIC_API_KEY": {
+                "set": self.live,
+                "unlocks": "the agents themselves — without it nothing can reason or act",
+                "required": True,
+            }
+        }
+        unlocks = {
+            "crm": "mirroring the record to a hosted CRM (the local store works without it)",
+            "email": "actually delivering email — daily logs, client updates, supplier orders",
+            "sms": "actually delivering texts — arrival notices, access, crew dispatch",
+            "calendar": "putting meetings and site walks on a real calendar",
+            "search": "real market research instead of simulated results",
+            "construction_data": "real permits, tenders and project awards",
+            "weather": "real forecasts for exterior scheduling",
+        }
+        for name, credentials in sorted(self.settings.services.items()):
+            missing = credentials.missing_vars
+            report[credentials.key_var or name] = {
+                "set": not missing,
+                "unlocks": unlocks.get(name, name),
+                "still_needs": missing,
+                "required": False,
+            }
+        if not self.settings.company_email:
+            report["COMPANY_EMAIL"] = {
+                "set": False,
+                "unlocks": "sending at all — outbound email is refused from an unknown address",
+                "required": True,
+            }
+        return report
 
     def agents(self, family: str = "") -> list[AgentInfo]:
         """Every agent, its purpose, its tools and what each tool costs it."""

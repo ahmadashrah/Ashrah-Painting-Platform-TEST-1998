@@ -1,18 +1,26 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import pytest
 
-from lumia.config import ServiceCredentials, Settings
+from lumia.config import SETTINGS, Settings
 from lumia.workspace import Workspace
 
 
 @pytest.fixture
 def settings(tmp_path) -> Settings:
-    """Settings with every integration unconfigured, so nothing hits the network."""
-    names = ("crm", "email", "sms", "calendar", "search", "construction_data", "weather")
+    """Settings with every integration unconfigured, so nothing hits the network.
+
+    The service definitions are taken from the real ones with their keys
+    blanked, rather than hand-written here — a fixture that invents its own
+    credential shape stops catching changes to the real one.
+    """
+    services = {
+        name: replace(credentials, api_key=None, base_url="https://example.invalid", extra={})
+        for name, credentials in SETTINGS.services.items()
+    }
     return Settings(
         anthropic_api_key="test-key",
         model="claude-opus-5",
@@ -21,7 +29,7 @@ def settings(tmp_path) -> Settings:
         company_phone="",
         company_email="growth@example.com",
         data_dir=tmp_path,
-        services={n: ServiceCredentials(name=n, api_key=None, base_url="https://example.invalid") for n in names},
+        services=services,
     )
 
 

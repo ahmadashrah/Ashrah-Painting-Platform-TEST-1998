@@ -48,10 +48,21 @@ class ServiceCredentials:
     api_key: str | None = None
     base_url: str | None = None
     extra: dict[str, str] = field(default_factory=dict)
+    #: The environment variable this key comes from. Carried so `status` can
+    #: say *which* variable to set rather than only that one is missing.
+    key_var: str = ""
+    also_needs: tuple[str, ...] = ()
 
     @property
     def configured(self) -> bool:
         return bool(self.api_key)
+
+    @property
+    def missing_vars(self) -> list[str]:
+        """Which variables still have to be set for this service to go live."""
+        if self.configured:
+            return [v for v in self.also_needs if not os.environ.get(v)]
+        return [self.key_var, *[v for v in self.also_needs if not os.environ.get(v)]]
 
 
 def _service(name: str, key_var: str, url_var: str, default_url: str, **extra_vars: str) -> ServiceCredentials:
@@ -60,6 +71,8 @@ def _service(name: str, key_var: str, url_var: str, default_url: str, **extra_va
         api_key=os.environ.get(key_var) or None,
         base_url=os.environ.get(url_var) or default_url,
         extra={k: os.environ[v] for k, v in extra_vars.items() if os.environ.get(v)},
+        key_var=key_var,
+        also_needs=tuple(extra_vars.values()),
     )
 
 

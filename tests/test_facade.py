@@ -202,3 +202,35 @@ def test_rejecting_leaves_the_action_undone(offline):
 def test_repr_says_whether_it_can_run(offline, lumia):
     assert "no API key" in repr(offline)
     assert "live" in repr(lumia)
+
+
+# --- where the keys go ----------------------------------------------------
+
+
+def test_the_key_report_names_the_variable_to_set(offline):
+    keys = offline.keys()
+    assert keys["ANTHROPIC_API_KEY"]["set"] is False
+    assert keys["ANTHROPIC_API_KEY"]["required"] is True
+    # Not just "email is mocked" — the exact variable.
+    assert "SENDGRID_API_KEY" in keys
+    assert keys["SENDGRID_API_KEY"]["unlocks"]
+
+
+def test_a_multi_variable_service_lists_what_is_still_missing():
+    """Twilio needs three variables; setting one is not being configured."""
+    from lumia.config import ServiceCredentials
+
+    partial = ServiceCredentials(
+        name="sms",
+        api_key="token",
+        key_var="TWILIO_AUTH_TOKEN",
+        also_needs=("TWILIO_ACCOUNT_SID", "TWILIO_FROM_NUMBER"),
+    )
+    assert partial.missing_vars == ["TWILIO_ACCOUNT_SID", "TWILIO_FROM_NUMBER"]
+
+    nothing = ServiceCredentials(name="email", key_var="SENDGRID_API_KEY")
+    assert nothing.missing_vars == ["SENDGRID_API_KEY"]
+
+
+def test_status_carries_the_key_report(offline):
+    assert "keys" in offline.status()
