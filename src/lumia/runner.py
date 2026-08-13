@@ -40,7 +40,9 @@ except ImportError:  # pragma: no cover - Windows
 
 from .agent import MAX_ITERATIONS, AgentRun
 from .agents import ROLE_TOOLS, build_agent
+from .agents import COMMS_ROLES
 from .config import SETTINGS, Settings
+from .deadline import Deadline, budget_for
 from .domain.projects import new_id
 from .llm import build_client
 from .tools import Toolbox
@@ -137,6 +139,8 @@ class RunRecord:
     approvals_raised: list[str] = field(default_factory=list)
     error: str = ""
     duration_seconds: float = 0.0
+    budget_seconds: float = 0.0
+    timed_out: bool = False
     #: Always true. Recorded rather than assumed, so an audit does not have
     #: to take the docstring's word for it.
     isolated: bool = True
@@ -199,7 +203,13 @@ class Runner:
         workspace = Workspace.build(settings=self.settings, data_dir=self.data_dir)
         return workspace, Toolbox(workspace)
 
-    def run(self, role: str, task: str, max_iterations: int = MAX_ITERATIONS) -> RunRecord:
+    def run(
+        self,
+        role: str,
+        task: str,
+        max_iterations: int = MAX_ITERATIONS,
+        budget_seconds: float | None = None,
+    ) -> RunRecord:
         """Run one agent on one task, from a cold start, under its own number."""
         if role not in ROLE_TOOLS:
             raise ValueError(f"unknown role '{role}'; expected one of {', '.join(sorted(ROLE_TOOLS))}")
@@ -209,7 +219,17 @@ class Runner:
         # The number is issued before anything else happens, so a run that
         # fails on its first turn is still findable by reference.
         number = self.counter(workspace).next()
-        record = RunRecord(role=role, task=task, number=number, reference=reference_for(number))
+        # Communication is time-critical: a crew at a locked door or a client
+        # waiting on the log is not served by a perfect message that is late.
+        budget = budget_seconds if budget_seconds is not None else budget_for(role, COMMS_ROLES)
+        deadline = Deadline(
+            budget_seconds=budget,
+            label="communication" if role in COMMS_ROLES else "growth work",
+        )
+        record = RunRecord(
+            role=role, task=task, number=number, reference=reference_for(number),
+            budget_seconds=budget,
+        )
 
         # Everything this run writes is stamped with the reference — see
         # LocalStore.put. The workspace is the run's scope, so the run's
@@ -221,7 +241,7 @@ class Runner:
         started = datetime.now()
 
         try:
-            result: AgentRun = agent.run(task, max_iterations=max_iterations)
+            result: AgentRun = agent.run(task, max_iterations=max_iterations, deadline=deadline)
         except Exception as exc:  # a failed run is still a run, and still recorded
             record.status = "failed"
             record.error = f"{type(exc).__name__}: {exc}"
@@ -234,6 +254,7 @@ class Runner:
             record.tools_executed = [c.tool for c in result.tool_calls if c.executed]
             record.tools_gated = [c.tool for c in result.tool_calls if not c.executed]
             record.approvals_raised = list(result.approvals_raised)
+            record.timed_out = result.timed_out
 
         record.finished_at = _timestamp()
         record.duration_seconds = round((datetime.now() - started).total_seconds(), 2)

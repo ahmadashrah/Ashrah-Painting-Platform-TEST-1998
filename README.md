@@ -85,6 +85,46 @@ the approval queue.
 
 ---
 
+## No communication takes longer than 120 seconds
+
+A crew is at a locked door, a client leaves site at five, a supplier's
+cut-off is in ten minutes. A message that arrives late has partly failed even
+if the wording was perfect, so ordering paint, sending a log, assigning an
+employee and drafting a message all carry a hard budget rather than a hope.
+
+Enforced at three points, because one is not enough:
+
+| | |
+|---|---|
+| **Between turns** | the loop will not start another model call on a spent budget |
+| **Before a tool call** | no new outbound work begins with no time left |
+| **Inside each HTTP call** | every request gets what is actually left, and retries stop when there is no room for another attempt |
+
+That third one is where the budget was really going. A send with three
+retries at twenty seconds each could take 61 seconds on its own, and Whisper
+was allowed 120 — a single recording could have swallowed the whole budget.
+Both now size themselves against the run's remaining time.
+
+What it deliberately does **not** do is abort a request already in flight. A
+send cancelled mid-write may still have been delivered, and a message the
+record shows as unsent but the client received is worse than one that
+finishes four seconds late. The budget stops new work; it never interrupts
+work already committed.
+
+When the limit is reached the run stops and says exactly what happened:
+
+```
+Stopped at the 120-second limit for communication, before running
+send_communication. Completed: build_daily_log, compose_daily_log.
+Anything not listed did not happen.
+```
+
+Growth work gets 600 seconds — researching an account properly is worth more
+than researching it quickly. Both are overridable with
+`LUMIA_COMMS_BUDGET_SECONDS` and `LUMIA_GROWTH_BUDGET_SECONDS`.
+
+---
+
 ## Every run has a number
 
 A number is issued at creation — before the agent takes its first turn — so a
@@ -436,7 +476,7 @@ fails if you forget.
 ## Development
 
 ```bash
-python -m pytest -q          # 240 tests, no network, no API key needed
+python -m pytest -q          # 267 tests, no network, no API key needed
 ```
 
 The suite drives the agent loop with a scripted fake client, so both gates,

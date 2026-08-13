@@ -46,6 +46,17 @@ class Workspace:
         self.run_ref = reference
         self.store.run_ref = reference
 
+    def set_deadline(self, deadline: Any) -> None:
+        """Share the run's time budget with every outbound integration.
+
+        Each one then sizes its own timeouts and retries against what is
+        actually left, instead of against a fixed number that assumed it was
+        the only call in the run.
+        """
+        for service in (self.crm, self.email, self.sms, self.calendar,
+                        self.weather, self.search, self.construction, self.openai):
+            service.budget = deadline
+
     @classmethod
     def build(cls, settings: Settings | None = None, data_dir: Path | None = None) -> "Workspace":
         settings = settings or SETTINGS

@@ -24,6 +24,10 @@ MAX_RETRIES = 3
 BACKOFF_BASE_SECONDS = 0.5
 TIMEOUT_SECONDS = 20.0
 
+#: A retry needs room for the wait *and* the attempt after it, or it is just
+#: a slower way to fail.
+MIN_RETRY_HEADROOM = 3.0
+
 
 class IntegrationError(RuntimeError):
     """A call to an external service failed in a way the agent should see."""
@@ -46,6 +50,18 @@ class Integration:
 
     credentials: ServiceCredentials
     calls: list[CallRecord] = field(default_factory=list)
+    #: The run's remaining time, when one is in progress. Without it a call
+    #: assumes it is the only thing happening; with it, three retries at
+    #: twenty seconds each cannot quietly consume half a run's budget.
+    budget: Any = None
+
+    def _timeout(self, preferred: float = TIMEOUT_SECONDS) -> float:
+        if self.budget is None:
+            return preferred
+        return self.budget.timeout_for(preferred)
+
+    def _has_time(self) -> bool:
+        return self.budget is None or self.budget.usable
 
     @property
     def name(self) -> str:
@@ -91,6 +107,11 @@ class Integration:
         url = f"{str(self.credentials.base_url).rstrip('/')}/{path.lstrip('/')}"
         last_error: Exception | None = None
 
+        if not self._has_time():
+            raise IntegrationError(
+                f"{self.name} call to {path} was not attempted: the run's time budget is spent"
+            )
+
         for attempt in range(MAX_RETRIES):
             try:
                 response = httpx.request(
@@ -99,7 +120,7 @@ class Integration:
                     json=json,
                     params=params,
                     headers=self._headers(),
-                    timeout=TIMEOUT_SECONDS,
+                    timeout=self._timeout(),
                 )
             except httpx.HTTPError as exc:  # network-level failure
                 last_error = exc
@@ -113,6 +134,12 @@ class Integration:
 
             if attempt < MAX_RETRIES - 1:
                 delay = BACKOFF_BASE_SECONDS * (2**attempt)
+                # Retrying into a spent budget only fails slower than stopping.
+                if self.budget is not None and self.budget.remaining <= delay + MIN_RETRY_HEADROOM:
+                    log.warning(
+                        "%s call failed (%s); no time left in the run to retry", self.name, last_error
+                    )
+                    break
                 log.warning("%s call failed (%s); retrying in %.1fs", self.name, last_error, delay)
                 time.sleep(delay)
 

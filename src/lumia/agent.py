@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .autonomy import ApprovalRequest, AutonomyLevel, classify
+from .deadline import Deadline
 from .llm import ClaudeClient, build_client, text_of, tool_uses
 from .prompts import system_prompt
 from .tools import Toolbox
@@ -44,6 +45,7 @@ class AgentRun:
     approvals_raised: list[str] = field(default_factory=list)
     iterations: int = 0
     stopped_because: str = "end_turn"
+    timed_out: bool = False
 
     def summary(self) -> str:
         executed = sum(1 for c in self.tool_calls if c.executed)
@@ -75,14 +77,28 @@ class Agent:
     def system(self) -> str:
         return system_prompt(self.role, self.ws.settings)
 
-    def run(self, task: str, max_iterations: int = MAX_ITERATIONS) -> AgentRun:
+    def run(
+        self,
+        task: str,
+        max_iterations: int = MAX_ITERATIONS,
+        deadline: Deadline | None = None,
+    ) -> AgentRun:
         run = AgentRun(role=self.role, task=task)
         messages: list[dict[str, Any]] = [{"role": "user", "content": task}]
         schemas = self.toolbox.schemas(self.allowed_tools)
         pause_resumes = 0
 
+        # Integrations consult the same budget, so one slow provider cannot
+        # spend the whole run's time on retries.
+        if deadline is not None:
+            self.ws.set_deadline(deadline)
+
         for iteration in range(1, max_iterations + 1):
             run.iterations = iteration
+
+            if deadline is not None and not deadline.usable:
+                return self._out_of_time(run, deadline, "starting another turn")
+
             response = self.client.create(system=self.system, messages=messages, tools=schemas)
 
             # Safety classifiers can decline; check before reading content.
@@ -110,6 +126,13 @@ class Agent:
                 run.stopped_because = str(getattr(response, "stop_reason", "end_turn"))
                 return run
 
+            # The budget stops new work; it never interrupts a call already in
+            # flight. A send cancelled mid-write may still have been delivered,
+            # and a message the record shows as unsent but the client received
+            # is worse than one that finishes a few seconds late.
+            if deadline is not None and not deadline.usable:
+                return self._out_of_time(run, deadline, f"running {calls[0].name}")
+
             results = [self._handle_tool_call(call, run) for call in calls]
             messages.append({"role": "user", "content": results})
 
@@ -118,6 +141,22 @@ class Agent:
             f"Stopped after {max_iterations} turns without finishing. "
             "Narrow the task or raise the iteration limit."
         )
+        return run
+
+    def _out_of_time(self, run: AgentRun, deadline: Deadline, before: str) -> AgentRun:
+        """Stop cleanly and say exactly what did and did not happen."""
+        done = [c.tool for c in run.tool_calls if c.executed]
+        held = [c.tool for c in run.tool_calls if not c.executed]
+        run.stopped_because = "deadline_exceeded"
+        run.timed_out = True
+        run.reply = (
+            f"Stopped at the {deadline.budget_seconds:.0f}-second limit for {deadline.label}, "
+            f"before {before}. "
+            + (f"Completed: {', '.join(done)}. " if done else "Nothing was sent. ")
+            + (f"Queued for approval: {', '.join(held)}. " if held else "")
+            + "Anything not listed did not happen."
+        )
+        log.warning("run hit its %.0fs budget after %s", deadline.budget_seconds, run.summary())
         return run
 
     # --- tool dispatch with the autonomy gate ---------------------------

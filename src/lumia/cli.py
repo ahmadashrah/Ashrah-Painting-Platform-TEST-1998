@@ -49,7 +49,11 @@ def _print(payload: Any) -> None:
 
 def _report_run(run: Any) -> None:
     reference = getattr(run, "reference", "") or "unnumbered"
-    print(f"\n{reference}  [{run.role}] {run.summary()} — stopped: {run.stopped_because}\n")
+    print(f"\n{reference}  [{run.role}] {run.summary()} — stopped: {run.stopped_because}")
+    if getattr(run, "timed_out", False):
+        print(f"  hit the {getattr(run, 'budget_seconds', 0):.0f}s limit — "
+              "anything not listed below did not happen")
+    print()
     for call in run.tool_calls:
         mark = "OK " if call.executed else "GATE"
         print(f"  {mark} L{call.level} {call.tool}: {call.result_summary}")

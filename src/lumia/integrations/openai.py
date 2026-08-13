@@ -40,6 +40,10 @@ log = logging.getLogger(__name__)
 #: Whisper's cap. A longer recording has to be split before sending.
 MAX_AUDIO_BYTES = 25 * 1024 * 1024
 
+#: What transcription would like, absent any other constraint. A run's own
+#: budget takes precedence over this.
+TRANSCRIBE_TIMEOUT_SECONDS = 90.0
+
 #: Languages the crews actually report in, passed as a hint to improve
 #: accuracy on short, noisy jobsite recordings.
 FIELD_LANGUAGES = ("en", "ar", "ku", "fr", "es", "pt", "tl", "pa")
@@ -95,13 +99,19 @@ class OpenAIService(Integration):
             # Priming with site vocabulary measurably helps on proper nouns.
             data["prompt"] = prompt[:900]
 
+        # Transcription is slow, so it asks for longer than the default — but
+        # never for longer than the run actually has. Left unbounded, one
+        # recording would swallow a whole communication budget on its own.
+        if not self._has_time():
+            return {"error": "not attempted: the run's time budget is spent"}
+
         try:
             response = httpx.post(
                 f"{str(self.credentials.base_url).rstrip('/')}/audio/transcriptions",
                 headers={"Authorization": f"Bearer {self.credentials.api_key}"},
                 files={"file": ("recording.m4a", payload, "application/octet-stream")},
                 data=data,
-                timeout=120.0,   # transcription is slow; the default would cut it off
+                timeout=self._timeout(TRANSCRIBE_TIMEOUT_SECONDS),
             )
         except httpx.HTTPError as exc:
             raise IntegrationError(f"openai transcription failed: {exc}") from exc
