@@ -46,6 +46,15 @@ class Workspace:
         self.run_ref = reference
         self.store.run_ref = reference
 
+    def set_egress_guard(self, guard: Any) -> None:
+        """Bound every integration to the hosts this deployment allows."""
+        for service in self._services():
+            service.egress = guard
+
+    def _services(self) -> tuple[Any, ...]:
+        return (self.crm, self.email, self.sms, self.calendar,
+                self.weather, self.search, self.construction, self.openai)
+
     def set_deadline(self, deadline: Any) -> None:
         """Share the run's time budget with every outbound integration.
 
@@ -53,8 +62,7 @@ class Workspace:
         actually left, instead of against a fixed number that assumed it was
         the only call in the run.
         """
-        for service in (self.crm, self.email, self.sms, self.calendar,
-                        self.weather, self.search, self.construction, self.openai):
+        for service in self._services():
             service.budget = deadline
 
     @classmethod

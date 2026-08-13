@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 
 from ..config import ServiceCredentials
+from ..contract import EgressGuard
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +55,9 @@ class Integration:
     #: assumes it is the only thing happening; with it, three retries at
     #: twenty seconds each cannot quietly consume half a run's budget.
     budget: Any = None
+    #: Set per run. Without it, a call is trusted (construction-time
+    #: base URLs only); with it, every destination is checked.
+    egress: Any = None
 
     def _timeout(self, preferred: float = TIMEOUT_SECONDS) -> float:
         if self.budget is None:
@@ -105,6 +109,8 @@ class Integration:
             return result
 
         url = f"{str(self.credentials.base_url).rstrip('/')}/{path.lstrip('/')}"
+        if self.egress is not None:
+            self.egress.check(url, what=f"calling {self.name}")
         last_error: Exception | None = None
 
         if not self._has_time():

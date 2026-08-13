@@ -44,11 +44,13 @@ from .agent import MAX_ITERATIONS, AgentRun
 from .agents import ROLE_TOOLS, build_agent
 from .agents import COMMS_ROLES
 from .config import SETTINGS, Settings
+from .contract import ContractBreach, EgressGuard
 from .deadline import Deadline, budget_for
 from .domain.projects import new_id
 from .llm import build_client
 from .observability import (
-    HOOKS, PHASE_FINISHED, PHASE_STARTED, RUN_FAILED, RUN_FINISHED, RUN_KILLED, RUN_STARTED,
+    HOOKS, CONTRACT_BREACHED, PHASE_FINISHED, PHASE_STARTED, RUN_FAILED, RUN_FINISHED,
+    RUN_KILLED, RUN_STARTED,
     JsonlRecorder, KillSwitch, RunObserver,
 )
 from .phases import Phase, plan_for
@@ -204,6 +206,9 @@ class RunRecord:
     killed: bool = False
     #: One entry per phase: what it was for, what it used, how it ended.
     phases: list[dict[str, Any]] = field(default_factory=list)
+    #: Set when the run tried to act outside its contract and was stopped.
+    breached: bool = False
+    breach: dict[str, Any] = field(default_factory=dict)
     #: Always true. Recorded rather than assumed, so an audit does not have
     #: to take the docstring's word for it.
     isolated: bool = True
@@ -321,6 +326,9 @@ class Runner:
         # LocalStore.put. The workspace is the run's scope, so the run's
         # identity lives on it rather than being threaded through every call.
         workspace.stamp_run(record.reference)
+        # Every outbound call this run makes is checked against the hosts this
+        # deployment is configured for.
+        workspace.set_egress_guard(EgressGuard.from_settings(self.settings))
 
         recorder = self.recorder()
         observer = RunObserver(run=record.reference, role=role)
@@ -347,6 +355,32 @@ class Runner:
                     observer=observer,
                     switch=switch,
                 )
+        except ContractBreach as exc:
+            # A run that reached outside its contract is stopped where it
+            # stood. Nothing after that point can be assumed to be inside it.
+            record.status = "killed"
+            record.killed = True
+            record.breached = True
+            record.breach = exc.breach.to_dict()
+            record.stopped_because = "contract_breach"
+            record.error = exc.breach.detail
+            record.reply = (
+                f"Stopped: {exc.breach.detail} "
+                + (f"Completed before that: {', '.join(p['phase'] for p in record.phases)}. "
+                   if record.phases else "Nothing was done. ")
+                + "Anything not listed did not happen."
+            )
+            # Not **breach.to_dict(): its "kind" would collide with emit's own
+            # kind parameter, and the resulting TypeError would be caught by
+            # the generic handler below and reported as a mystery failure.
+            observer.emit(
+                CONTRACT_BREACHED,
+                breach=exc.breach.kind,
+                attempted=exc.breach.attempted,
+                phase=exc.breach.phase,
+                detail=exc.breach.detail,
+            )
+            log.error("run %s breached its contract: %s", record.reference, exc.breach.detail)
         except HardTimeout as exc:
             record.status = "failed"
             record.timed_out = True
@@ -371,14 +405,23 @@ class Runner:
         record.duration_seconds = round((datetime.now() - started).total_seconds(), 2)
         workspace.store.put("runs", record.id, record.to_dict())
         switch.clear(record.reference)
+        # The closing event has to match the outcome. A breached or killed run
+        # logged as "run.finished" reads as a clean run to anyone scanning the
+        # step log, which is the failure this whole area exists to prevent.
+        closing = RUN_FINISHED
+        if record.killed or record.breached:
+            closing = RUN_KILLED
+        elif record.status == "failed":
+            closing = RUN_FAILED
         observer.emit(
-            RUN_FAILED if record.status == "failed" else RUN_FINISHED,
+            closing,
             status=record.status,
             seconds=record.duration_seconds,
             actions=len(record.tools_executed),
             held=len(record.tools_gated),
             timed_out=record.timed_out,
             killed=record.killed,
+            breached=record.breached,
             error=record.error,
         )
         return record

@@ -72,7 +72,8 @@ def test_gathering_phases_hold_no_sending_tools():
 # --- enforcement ------------------------------------------------------------
 
 
-def test_a_tool_outside_the_phase_is_refused_not_run(settings, tmp_path):
+def test_a_tool_outside_the_phase_kills_the_run(settings, tmp_path):
+    """Reaching past the phase is a contract breach, not a wrong guess."""
     runner = Runner(settings=settings, data_dir=tmp_path, client_factory=lambda s: PhaseClient({
         "gather": [calls_tool("send_communication", {"draft_id": "comm_x"}), text("gathered")],
     }))
@@ -81,28 +82,61 @@ def test_a_tool_outside_the_phase_is_refused_not_run(settings, tmp_path):
 
     record = runner.run("client_comms", "send the log")
 
-    refused = [e for e in events if e.kind == TOOL_REFUSED]
-    assert len(refused) == 1
-    assert refused[0].detail["tool"] == "send_communication"
-    assert refused[0].detail["phase"] == "gather"
+    assert record.breached is True
+    assert record.killed is True
+    assert record.stopped_because == "contract_breach"
+    assert record.breach["attempted"] == "send_communication"
+    assert record.breach["phase"] == "gather"
     assert "send_communication" not in record.tools_executed
 
+    # And the run stopped there — no later phase ran.
+    assert [p["phase"] for p in record.phases] == []
+    kinds = [e.kind for e in events]
+    assert "contract.breached" in kinds
+    # And the run closes as killed, never as a clean finish.
+    assert kinds[-1] == "run.killed"
 
-def test_the_refusal_tells_the_model_what_it_may_use(settings, tmp_path):
-    """A refusal that does not say what is available just gets retried."""
+
+def test_the_breach_records_what_was_available(settings, tmp_path):
+    """An operator has to be able to see what the run should have used."""
     runner = Runner(settings=settings, data_dir=tmp_path, client_factory=lambda s: PhaseClient({
         "gather": [calls_tool("send_communication", {"draft_id": "comm_x"}), text("ok")],
     }))
     record = runner.run("client_comms", "send the log")
 
-    gather = next(p for p in record.phases if p["phase"] == "gather")
-    assert "send_communication" in gather["tools_refused"]
-    assert "build_daily_log" in gather["available_tools"]
+    assert "build_daily_log" in record.breach["allowed"]
+    assert "send_communication" in record.reply
+
+
+def test_an_unknown_tool_is_a_breach_too(settings, tmp_path):
+    runner = Runner(settings=settings, data_dir=tmp_path, client_factory=lambda s: PhaseClient({
+        "gather": [calls_tool("wire_funds_somewhere", {}), text("ok")],
+    }))
+    record = runner.run("client_comms", "do something odd")
+
+    assert record.breached is True
+    assert record.breach["kind"] == "unknown_tool"
 
 
 def test_enforcement_does_not_depend_on_the_schema_list(ws):
-    """Omitting a schema makes a call unlikely; refusing makes it impossible."""
+    """Omitting a schema makes a call unlikely; stopping makes it impossible."""
     from lumia.agent import Agent
+    from lumia.contract import ContractBreach
+
+    agent = Agent(role="client_comms", workspace=ws, toolbox=Toolbox(ws),
+                  client=FakeClient([calls_tool("send_communication", {"draft_id": "x"}), text("done")]),
+                  allowed_tools=["build_daily_log"])
+
+    with pytest.raises(ContractBreach) as excinfo:
+        agent.run("try to send anyway")
+    assert excinfo.value.breach.attempted == "send_communication"
+
+
+def test_the_policy_can_be_softened_to_refuse(ws, monkeypatch):
+    """Killing is the default; some deployments want the agent to recover."""
+    from lumia.agent import Agent
+
+    monkeypatch.setenv("LUMIA_ON_BREACH", "refuse")
 
     agent = Agent(role="client_comms", workspace=ws, toolbox=Toolbox(ws),
                   client=FakeClient([calls_tool("send_communication", {"draft_id": "x"}), text("done")]),
@@ -111,6 +145,27 @@ def test_enforcement_does_not_depend_on_the_schema_list(ws):
 
     assert run.tool_calls[0].executed is False
     assert "outside this phase" in run.tool_calls[0].result_summary
+
+
+def test_being_gated_is_never_a_breach(settings, tmp_path):
+    """A Level 3 tool queued for approval is the system working, not a bypass."""
+    from lumia.comms.seed import seed_demo_projects
+
+    runner = Runner(settings=settings, data_dir=tmp_path)
+    workspace, _ = runner.build()
+    project = seed_demo_projects(workspace)["project_id"]
+    runner.client_factory = lambda s: PhaseClient({"prepare": [
+        calls_tool("place_material_order", {
+            "project_id": project, "supplier": "Priya Anand (DEMO)",
+            "items": ["primer"], "delivery_location": "bay"}),
+        text("Queued for approval."),
+    ]})
+
+    record = runner.run("vendor_comms", "order primer")
+
+    assert record.breached is False
+    assert record.killed is False
+    assert record.approvals_raised, "the gate did not fire at all"
 
 
 # --- logging -----------------------------------------------------------------
@@ -189,3 +244,83 @@ def test_a_kill_between_phases_is_reported_as_a_kill(settings, tmp_path):
     assert record.killed is True
     assert record.stopped_because == "killed"
     assert "stop now" in record.reply
+
+
+# --- out-of-scope network calls ---------------------------------------------
+
+
+def test_the_egress_guard_allows_only_configured_hosts(settings):
+    from lumia.contract import ContractBreach, EgressGuard
+
+    guard = EgressGuard.from_settings(settings)
+
+    assert guard.permitted("https://api.anthropic.com/v1/messages")
+    assert guard.permitted("https://api.openai.com/v1/chat/completions")
+    assert not guard.permitted("https://attacker.example.net/collect")
+
+    with pytest.raises(ContractBreach) as excinfo:
+        guard.check("http://169.254.169.254/latest/meta-data/", what="fetching a recording")
+    assert excinfo.value.breach.kind == "out_of_scope_host"
+    assert "169.254.169.254" in excinfo.value.breach.detail
+
+
+def test_a_lookalike_host_does_not_pass():
+    """'evil-example.com' must not satisfy an allowance for 'example.com'."""
+    from lumia.contract import EgressGuard
+
+    guard = EgressGuard(hosts={"example.com"})
+
+    assert guard.permitted("https://example.com/x")
+    assert guard.permitted("https://media.example.com/x")     # a real subdomain
+    assert not guard.permitted("https://evil-example.com/x")
+    assert not guard.permitted("https://example.com.attacker.net/x")
+
+
+def test_hosts_can_be_allowed_explicitly(monkeypatch, settings):
+    from lumia.contract import EgressGuard
+
+    monkeypatch.setenv("LUMIA_ALLOWED_HOSTS", "media.ashrah.example, cdn.ashrah.example")
+    guard = EgressGuard.from_settings(settings)
+
+    assert guard.permitted("https://media.ashrah.example/photo.jpg")
+    assert guard.permitted("https://cdn.ashrah.example/a.m4a")
+    assert not guard.permitted("https://elsewhere.example/a.m4a")
+
+
+def test_fetching_a_recording_from_an_unlisted_host_is_a_breach(settings):
+    """The agent supplies this URL. Without the guard it is fetch-anything."""
+    from lumia.config import ServiceCredentials
+    from lumia.contract import ContractBreach, EgressGuard
+    from lumia.integrations.openai import OpenAIService
+
+    service = OpenAIService(ServiceCredentials(name="openai", api_key="sk-test",
+                                               base_url="https://api.openai.com/v1"))
+    service.egress = EgressGuard.from_settings(settings)
+
+    with pytest.raises(ContractBreach):
+        service.transcribe("https://attacker.example.net/not-audio")
+
+
+def test_reading_a_photo_from_an_unlisted_host_is_a_breach(settings):
+    from lumia.config import ServiceCredentials
+    from lumia.contract import ContractBreach, EgressGuard
+    from lumia.integrations.openai import OpenAIService
+
+    service = OpenAIService(ServiceCredentials(name="openai", api_key="sk-test",
+                                               base_url="https://api.openai.com/v1"))
+    service.egress = EgressGuard.from_settings(settings)
+
+    with pytest.raises(ContractBreach):
+        service.describe_image("https://attacker.example.net/photo.jpg")
+
+
+def test_a_run_binds_the_guard_to_every_integration(settings, tmp_path):
+    runner = Runner(settings=settings, data_dir=tmp_path, client_factory=lambda s: PhaseClient({}))
+    record = runner.run("intake", "process reports")
+    assert record.status == "finished"
+
+    # The guard is attached during the run; a fresh workspace has none until one starts.
+    workspace, _ = runner.build()
+    workspace.set_egress_guard(object())
+    for service in workspace._services():
+        assert service.egress is not None

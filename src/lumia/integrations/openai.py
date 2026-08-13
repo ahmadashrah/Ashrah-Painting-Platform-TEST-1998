@@ -83,7 +83,7 @@ class OpenAIService(Integration):
                     "_reason": "openai is not configured; set OPENAI_API_KEY in .env to go live"}
 
         try:
-            payload = _read_audio(audio)
+            payload = _read_audio(audio, egress=self.egress)
         except (OSError, ValueError) as exc:
             return {"error": str(exc)}
         if len(payload) > MAX_AUDIO_BYTES:
@@ -154,6 +154,10 @@ class OpenAIService(Integration):
                     "_reason": "openai is not configured; set OPENAI_API_KEY in .env to go live"}
 
         url = image if isinstance(image, str) and image.startswith(("http://", "https://")) else None
+        if url is not None and self.egress is not None:
+            # The URL is handed to the vision API to fetch. It is still this
+            # run reaching for an address the model chose.
+            self.egress.check(url, what="reading a photo")
         if url is None:
             try:
                 encoded = base64.b64encode(_read_bytes(image)).decode()
@@ -217,11 +221,13 @@ def _read_bytes(source: bytes | str | Path) -> bytes:
     return path.read_bytes()
 
 
-def _read_audio(source: bytes | str | Path) -> bytes:
+def _read_audio(source: bytes | str | Path, egress: Any = None) -> bytes:
     if isinstance(source, bytes):
         return source
     text = str(source)
     if text.startswith(("http://", "https://")):
+        if egress is not None:
+            egress.check(text, what="fetching a recording")
         try:
             response = httpx.get(text, timeout=60.0, follow_redirects=True)
         except httpx.HTTPError as exc:

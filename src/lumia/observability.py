@@ -56,6 +56,7 @@ BUDGET_WARNING = "budget.warning"
 RUN_FINISHED = "run.finished"
 RUN_FAILED = "run.failed"
 RUN_KILLED = "run.killed"
+CONTRACT_BREACHED = "contract.breached"
 
 #: Warn the operator once a run has spent this much of its budget, so a
 #: slow run is visible before it is a late one.

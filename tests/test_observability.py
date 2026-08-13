@@ -179,8 +179,10 @@ def test_a_budget_warning_fires_before_a_run_is_late():
 
 def test_an_operator_can_kill_a_running_run(settings, tmp_path):
     class Endless:
+        """Stays inside the gather phase, so only the operator ends this."""
+
         def create(self, **_kwargs):
-            time.sleep(0.05)
+            time.sleep(0.15)
             return calls_tool("list_projects", {}, use_id=f"t{time.time()}")
 
     runner = Runner(settings=settings, data_dir=tmp_path, client_factory=lambda s: Endless())

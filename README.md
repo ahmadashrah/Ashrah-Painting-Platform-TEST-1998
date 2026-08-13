@@ -135,6 +135,59 @@ new agents are unphased, never unable to run.
 
 ---
 
+## Stepping outside the contract kills the run
+
+A run may use the tools its phase holds and call the services this
+deployment is configured for. Reaching outside that is not a wrong guess to
+be corrected mid-flight — it is the run doing something nobody authorized,
+and it stops immediately.
+
+**What counts as a breach**
+
+| | |
+|---|---|
+| a tool the current phase does not hold | `tool_out_of_phase` |
+| a tool that does not exist, or the role never held | `unknown_tool` |
+| an HTTP call to a host this deployment is not configured for | `out_of_scope_host` |
+
+```
+RUN-000001 status=killed breached=True
+Stopped: 'send_communication' is not available in the gather phase.
+Available here: build_daily_log, communication_history, get_project, …
+```
+
+**What deliberately does not count.** Being *gated* is not a breach. A Level
+3 tool queued for approval is the harness working exactly as designed, and
+killing the run for it would punish the agent for using the approval path
+correctly — a test pins that a gated material order finishes cleanly with
+`breached: False`. A tool that runs and returns an error is not a breach
+either; it was reached legitimately and the agent should recover.
+
+**The network side is the one that mattered most.** The agent supplies URLs
+— a photo's location, a recording to transcribe — and those get fetched.
+Without a check, "transcribe this audio" is a request to fetch *any* address
+the model can name from inside your network, including `169.254.169.254`.
+Every outbound call is now checked against the hosts this deployment is
+configured for: the base URL of each service with credentials, the model
+providers, and anything named in `LUMIA_ALLOWED_HOSTS`. A subdomain of an
+allowed host passes; `evil-example.com` does not pass for `example.com`.
+
+**Why killing rather than refusing.** Refusing tells the agent "not that
+one" and lets it try again, which is right for a wrong guess and wrong for
+an attempt to act outside scope. Once a run has stepped outside its
+contract, nothing it does afterwards can be assumed to be inside it, and the
+cheapest safe state is stopped.
+
+The trade is real: a model reaching early for a tool it would hold in a
+later phase now ends the run rather than being corrected. Set
+`LUMIA_ON_BREACH=refuse` where that trade is not wanted.
+
+Every breach is recorded on the run — what was attempted, in which phase,
+and what was available instead — and closes the step log as `run.killed`,
+never as a clean finish.
+
+---
+
 ## The operator's window
 
 Every step a run takes is an event, and an operator can watch them live or
@@ -718,7 +771,7 @@ fails if you forget.
 ## Development
 
 ```bash
-python -m pytest -q          # 307 tests, no network, no API key needed
+python -m pytest -q          # 316 tests, no network, no API key needed
 ```
 
 The suite drives the agent loop with a scripted fake client, so both gates,

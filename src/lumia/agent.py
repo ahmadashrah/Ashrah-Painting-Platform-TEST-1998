@@ -14,6 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .autonomy import ApprovalRequest, AutonomyLevel, classify
+from .contract import KILL, OUT_OF_PHASE, UNKNOWN_TOOL, Breach, ContractBreach, policy
 from .deadline import Deadline
 from .observability import (
     GATE_DECIDED, MODEL_REPLIED, RUN_KILLED, TOOL_EXECUTED, TOOL_GATED,
@@ -230,18 +231,34 @@ class Agent:
         # that difference is the whole guarantee — a gathering phase must not
         # be able to send, however the request arrives.
         if not self._permitted(name):
-            reason = (
-                f"'{name}' is not available in the {self.phase or 'current'} phase. "
-                f"Available here: {', '.join(self.allowed_tools or []) or 'none'}."
+            known = self.toolbox.has(name)
+            breach = Breach(
+                kind=OUT_OF_PHASE if known else UNKNOWN_TOOL,
+                attempted=name,
+                phase=self.phase,
+                allowed=list(self.allowed_tools or []),
+                detail=(
+                    f"'{name}' is not available in the {self.phase or 'current'} phase. "
+                    f"Available here: {', '.join(self.allowed_tools or []) or 'none'}."
+                    if known else
+                    f"'{name}' is not a tool this agent holds."
+                ),
             )
             run.tool_calls.append(
                 ToolCallLog(tool=name, arguments=arguments, level=0, executed=False,
-                            reason=reason, result_summary="refused: outside this phase")
+                            reason=breach.detail, result_summary="refused: outside this phase")
             )
             if observer is not None:
-                observer.emit(TOOL_REFUSED, tool=name, phase=self.phase, reason=reason)
-            log.warning("refused out-of-phase tool %s in phase %s", name, self.phase)
-            return _tool_result(call.id, {"error": reason, "not_performed": True}, is_error=True)
+                observer.emit(TOOL_REFUSED, tool=name, phase=self.phase,
+                              breach=breach.kind, reason=breach.detail)
+            log.warning("out-of-scope tool %s in phase %s", name, self.phase)
+
+            # Reaching outside the contract stops the run rather than being
+            # corrected mid-flight: once a run has stepped outside its scope,
+            # nothing after that point can be assumed to be inside it.
+            if policy() == KILL:
+                raise ContractBreach(breach)
+            return _tool_result(call.id, {"error": breach.detail, "not_performed": True}, is_error=True)
 
         account = self._account_for(arguments)
         draft = self._draft_for(arguments)
