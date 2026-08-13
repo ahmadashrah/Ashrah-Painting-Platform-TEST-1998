@@ -135,7 +135,10 @@ class Integration:
             if attempt < MAX_RETRIES - 1:
                 delay = BACKOFF_BASE_SECONDS * (2**attempt)
                 # Retrying into a spent budget only fails slower than stopping.
-                if self.budget is not None and self.budget.remaining <= delay + MIN_RETRY_HEADROOM:
+                # `remaining` is None on an uncapped run, which is not a small
+                # number — it means there is nothing to run out of.
+                left = None if self.budget is None else self.budget.remaining
+                if left is not None and left <= delay + MIN_RETRY_HEADROOM:
                     log.warning(
                         "%s call failed (%s); no time left in the run to retry", self.name, last_error
                     )

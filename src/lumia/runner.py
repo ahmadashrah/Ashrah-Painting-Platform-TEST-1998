@@ -198,7 +198,8 @@ class RunRecord:
     approvals_raised: list[str] = field(default_factory=list)
     error: str = ""
     duration_seconds: float = 0.0
-    budget_seconds: float = 0.0
+    #: None when the run was not time-capped.
+    budget_seconds: float | None = None
     timed_out: bool = False
     killed: bool = False
     #: One entry per phase: what it was for, what it used, how it ended.
@@ -334,7 +335,10 @@ class Runner:
         observer.emit(RUN_STARTED, task=task, budget_seconds=budget, number=number)
 
         try:
-            with _watchdog(deadline.budget_seconds + WATCHDOG_GRACE_SECONDS, record.reference):
+            watchdog_after = (
+                deadline.budget_seconds + WATCHDOG_GRACE_SECONDS if deadline.limited else 0.0
+            )
+            with _watchdog(watchdog_after, record.reference):
                 result = self._run_phases(
                     agent=agent,
                     record=record,
@@ -428,7 +432,7 @@ class Runner:
                 combined.timed_out = True
                 combined.stopped_because = "deadline_exceeded"
                 combined.reply = (
-                    f"Stopped at the {deadline.budget_seconds:.0f}-second limit before the "
+                    f"Stopped at the {float(deadline.budget_seconds):.0f}-second limit before the "
                     f"{phase.name} phase. "
                     + (f"Completed phases: {', '.join(p['phase'] for p in record.phases)}. "
                        if record.phases else "Nothing was done. ")

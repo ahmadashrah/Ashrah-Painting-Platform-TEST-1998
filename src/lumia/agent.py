@@ -206,7 +206,7 @@ class Agent:
         run.stopped_because = "deadline_exceeded"
         run.timed_out = True
         run.reply = (
-            f"Stopped at the {deadline.budget_seconds:.0f}-second limit for {deadline.label}, "
+            f"Stopped at the {float(deadline.budget_seconds):.0f}-second limit for {deadline.label}, "
             f"before {before}. "
             + (f"Completed: {', '.join(done)}. " if done else "Nothing was sent. ")
             + (f"Queued for approval: {', '.join(held)}. " if held else "")

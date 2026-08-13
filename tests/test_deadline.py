@@ -23,17 +23,36 @@ from lumia.tools import Toolbox
 # --- the budget itself ------------------------------------------------------
 
 
-def test_communication_is_capped_at_two_minutes():
-    assert COMMS_BUDGET_SECONDS == 120.0
+def test_runs_are_not_time_capped_by_default():
+    """The 120-second limit was cancelled: half a message is worse than a slow one."""
+    assert COMMS_BUDGET_SECONDS is None
+    assert GROWTH_BUDGET_SECONDS is None
 
 
-def test_comms_roles_get_the_communication_budget():
+def test_no_role_carries_a_default_budget():
     from lumia.agents import COMMS_ROLES
 
-    for role in ("client_comms", "crew_comms", "vendor_comms", "intake", "escalation"):
-        assert budget_for(role, COMMS_ROLES) == COMMS_BUDGET_SECONDS
-    # Researching an account properly beats researching it quickly.
-    assert budget_for("research", COMMS_ROLES) == GROWTH_BUDGET_SECONDS
+    for role in ("client_comms", "crew_comms", "vendor_comms", "intake", "escalation", "research"):
+        assert budget_for(role, COMMS_ROLES) is None
+
+
+def test_an_unlimited_deadline_never_expires():
+    forever = Deadline(budget_seconds=None)
+    forever.started -= 10_000          # ten thousand seconds in
+
+    assert forever.limited is False
+    assert forever.expired is False
+    assert forever.usable is True
+    assert forever.remaining is None
+    # A call gets the timeout it asked for, not a shrunken one.
+    assert forever.timeout_for(20.0) == 20.0
+
+
+def test_a_budget_can_still_be_asked_for():
+    """The machinery stays for the cases that need it — a web request, a cron slot."""
+    capped = Deadline(budget_seconds=30.0)
+    assert capped.limited is True
+    assert capped.remaining is not None and capped.remaining <= 30.0
 
 
 def test_a_deadline_counts_down():
@@ -113,13 +132,16 @@ def test_a_run_inside_its_budget_is_untouched(ws):
     assert run.tool_calls[0].executed is True
 
 
-def test_the_runner_gives_comms_runs_the_120_second_budget(settings, tmp_path):
+def test_a_comms_run_is_uncapped_unless_asked(settings, tmp_path):
     runner = Runner(settings=settings, data_dir=tmp_path,
                     client_factory=lambda s: FakeClient([text("ok")]))
     record = runner.run("client_comms", "send the daily log")
 
-    assert record.budget_seconds == 120.0
+    assert record.budget_seconds is None
     assert record.timed_out is False
+
+    capped = runner.run("client_comms", "send it", budget_seconds=45.0)
+    assert capped.budget_seconds == 45.0
 
 
 def test_a_timed_out_run_is_recorded_as_such(settings, tmp_path):
@@ -184,11 +206,12 @@ def test_retries_do_not_outlive_the_budget(monkeypatch):
     assert attempts["n"] == 1, "it retried into a budget that could not afford it"
 
 
-def test_transcription_never_outlasts_the_run(ws):
-    """Whisper asks for 90s; a communication run does not have 90s to give."""
+def test_transcription_never_outlasts_a_budgeted_run(ws):
+    """With no cap Whisper gets its full window; under one it gets what is left."""
     from lumia.integrations.openai import TRANSCRIBE_TIMEOUT_SECONDS
 
-    assert TRANSCRIBE_TIMEOUT_SECONDS < COMMS_BUDGET_SECONDS
+    ws.openai.budget = Deadline(budget_seconds=None)
+    assert ws.openai._timeout(TRANSCRIBE_TIMEOUT_SECONDS) == TRANSCRIBE_TIMEOUT_SECONDS
 
     ws.openai.budget = Deadline(budget_seconds=10.0)
     assert ws.openai._timeout(TRANSCRIBE_TIMEOUT_SECONDS) <= 10.0
@@ -211,3 +234,27 @@ def test_the_budget_reaches_every_integration(ws):
 
     for service in (ws.email, ws.sms, ws.crm, ws.calendar, ws.search, ws.construction, ws.openai, ws.weather):
         assert service.budget is deadline, f"{service.name} was left without a budget"
+
+
+def test_retries_are_unaffected_by_an_uncapped_run(monkeypatch):
+    """`remaining` is None without a cap — that is 'no limit', not 'no time'."""
+    import httpx
+
+    from lumia.integrations import base
+
+    attempts = {"n": 0}
+
+    def always_503(*_args, **_kwargs):
+        attempts["n"] += 1
+        return httpx.Response(503, text="busy", request=httpx.Request("POST", "https://x/y"))
+
+    monkeypatch.setattr(base.httpx, "request", always_503)
+    monkeypatch.setattr(base.time, "sleep", lambda _s: None)
+
+    credentials = type("C", (), {"name": "email", "api_key": "k", "base_url": "https://x", "configured": True})()
+    service = _Service(credentials=credentials)
+    service.budget = Deadline(budget_seconds=None)
+
+    with pytest.raises(IntegrationError):
+        service.request("POST", "/send", json={}, mock={})
+    assert attempts["n"] == base.MAX_RETRIES, "an uncapped run lost its retries"

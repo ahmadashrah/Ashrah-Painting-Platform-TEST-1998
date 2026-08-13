@@ -125,8 +125,8 @@ the schema list, and nothing checked it at dispatch.
 
 A phase hands the next its written result, not its transcript — the composer
 receives the gathered facts as findings. Phases share one run number, one
-time budget and one kill switch: five phases do not mean five times the 120
-seconds.
+kill switch and, where one is set, one time budget: five phases never mean
+five times the budget.
 
 Adding a phase is adding an entry to `phases.py`. Its tools are intersected
 with the role's own allowlist, so a plan can narrow a role and never widen
@@ -147,8 +147,126 @@ python -m lumia.cli steps RUN-000042      # what it did, after the fact
 ```
 
 ```
-01:36:12.824 RUN-000042  run.started      task=order primer budget_seconds=120.0
-01:36:12.825 RUN-000042  turn.started     turn=1 remaining_seconds=120.0
+01:36:12.824 RUN-000042  run.started      task=order primer number=42
+01:36:12.825 RUN-000042  phase.started    phase=gather index=1 of=3
+01:36:12.825 RUN-000042  turn.started     turn=1
+01:36:12.825 RUN-000042  model.replied    turn=1 stop_reason=tool_use tool_calls=1
+01:36:12.825 RUN-000042  tool.proposed    tool=place_material_order arguments={…}
+01:36:12.826 RUN-000042  gate.decided     tool=place_material_order level=3 reason=…
+01:36:12.826 RUN-000042  tool.gated       tool=place_material_order approval_id=appr_…
+01:36:12.827 RUN-000042  run.finished     actions=1 held=1 timed_out=False killed=False
+```
+
+The two lines worth watching are `gate.decided` and `tool.gated`: what the
+agent asked to do, what the harness decided, and why.
+
+**Attaching your own hook** takes one call. It sees everything, including
+runs started by code you did not write and agents that do not exist yet:
+
+```python
+from lumia.observability import HOOKS
+
+HOOKS.subscribe(lambda event: my_dashboard.push(event.to_dict()), name="ops")
+```
+
+Two rules protect the run from the hook. A subscriber that raises is logged
+and skipped — an operator's broken dashboard cannot take down the crew
+dispatch, and a test asserts a later hook still fires after an earlier one
+throws. And payloads are trimmed before recording: a tool result can be 60KB,
+and the step log is for watching, not for storing.
+
+## Stopping a run
+
+Two mechanisms, because they fail differently.
+
+**The kill switch** is for a run doing the wrong thing. It is file-based, so
+it reaches a run in another process — a scheduled cycle, a web request, a
+worker:
+
+```bash
+python -m lumia.cli kill RUN-000042 --reason "wrong recipient"
+python -m lumia.cli kill ALL --reason "stop everything"
+python -m lumia.cli kill ALL --release
+```
+
+The run stops at its next step and says what had already happened. A
+reference is never reused, so a request can only ever mean the run it names —
+including one armed before that run starts.
+
+**The watchdog** is for a run that has stopped policing itself. The time
+budget is cooperative: it works because the loop checks it. That covers a
+slow run, not one blocked *below* the loop — a socket opened without a
+timeout, a library that swallowed the one we passed, a retry buried in a
+vendor SDK. A timer signal interrupts the blocked call itself, 15 seconds
+past the budget, so the clean stop normally wins the race. Measured: a call
+that would have blocked for 60 seconds is interrupted after 5.
+
+It needs the main thread of a POSIX process. Under a thread pool it does
+nothing, which is exactly why the cooperative checks sit at three points
+rather than being left to a watchdog that may not be there.
+
+Both are recorded. A killed or interrupted run keeps its number, its step log
+and its place in `lumia runs`.
+
+---
+
+## Time budgets, if you want them
+
+Runs are **uncapped by default**. A 120-second limit was tried and
+cancelled: a communication cut off part-way leaves a client half-told and a
+crew half-briefed, and an incomplete message costs more than a slow one.
+Runs are stopped by an operator, not by a clock — see the kill switch below.
+
+The machinery stays, because a budget is still right for some cases: a web
+request that has to return, or a scheduled job that must not overlap the
+next one.
+
+```bash
+LUMIA_COMMS_BUDGET_SECONDS=120 python -m lumia.cli comms daily-log
+```
+
+```python
+lumia.runner.run("client_comms", "send the log", budget_seconds=45)
+```
+
+When a budget *is* set, it is enforced at three points, because one is not
+enough:
+
+| | |
+|---|---|
+| **Between turns** | the loop will not start another model call on a spent budget |
+| **Before a tool call** | no new outbound work begins with no time left |
+| **Inside each HTTP call** | every request gets what is actually left, and retries stop when there is no room for another attempt |
+
+That third one matters most. A send with three retries at twenty seconds
+each takes 61 seconds unaided, and transcription asks for 90 — under a cap,
+both size themselves against what the run has left.
+
+What a budget never does is abort a request already in flight. A send
+cancelled mid-write may still have been delivered, and a message the record
+shows as unsent but the client received is worse than one that finishes
+late. It stops new work; it never interrupts committed work.
+
+A run that does hit its budget stops and says exactly what happened, and is
+recorded with `timed_out` set so it is visible in `lumia runs` afterwards.
+
+---
+
+## The operator's window
+
+Every step a run takes is an event, and an operator can watch them live or
+read them back afterwards.
+
+```bash
+python -m lumia.cli watch                 # live, every run
+python -m lumia.cli watch RUN-000042      # live, one run
+python -m lumia.cli steps RUN-000042      # what it did, after the fact
+```
+
+```
+01:36:12.824 RUN-000042  run.started      task=order primer number=42
+01:36:12.825 RUN-000042  phase.started    phase=gather index=1 of=3
+01:36:12.825 RUN-000042  turn.started     turn=1
 01:36:12.825 RUN-000042  model.replied    turn=1 stop_reason=tool_use tool_calls=1
 01:36:12.825 RUN-000042  tool.proposed    tool=place_material_order arguments={…}
 01:36:12.826 RUN-000042  gate.decided     tool=place_material_order level=3 reason=…
@@ -600,7 +718,7 @@ fails if you forget.
 ## Development
 
 ```bash
-python -m pytest -q          # 304 tests, no network, no API key needed
+python -m pytest -q          # 307 tests, no network, no API key needed
 ```
 
 The suite drives the agent loop with a scripted fake client, so both gates,
