@@ -220,6 +220,8 @@ class Handler(BaseHTTPRequestHandler):
         record = Runner().run(role, task, max_iterations=WEB_MAX_ITERATIONS)
         return self._send(200, {
             "id": record.id,
+            "run": record.reference,
+            "number": record.number,
             "role": record.role,
             "status": record.status,
             "reply": record.reply,

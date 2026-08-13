@@ -37,6 +37,14 @@ class Workspace:
     search: WebSearch
     construction: ConstructionData
     openai: OpenAIService
+    #: The run this workspace belongs to, once one has been issued a number.
+    #: A workspace is built per run, so this is the run's scope.
+    run_ref: str = ""
+
+    def stamp_run(self, reference: str) -> None:
+        """Bind this workspace to a run, so every write records which one."""
+        self.run_ref = reference
+        self.store.run_ref = reference
 
     @classmethod
     def build(cls, settings: Settings | None = None, data_dir: Path | None = None) -> "Workspace":

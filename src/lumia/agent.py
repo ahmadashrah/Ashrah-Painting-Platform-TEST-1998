@@ -138,6 +138,7 @@ class Agent:
                     agent=self.role,
                     account_id=str(arguments.get("account_id", "")),
                     project_id=str((draft or {}).get("project_id", "") or arguments.get("project_id", "")),
+                    run_ref=self.ws.run_ref,
                 )
             )
             # The draft stays in the ledger as held, not silently abandoned.

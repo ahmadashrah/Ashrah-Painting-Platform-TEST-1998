@@ -11,9 +11,10 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from .agent import Agent, AgentRun
+from .agent import MAX_ITERATIONS, Agent
 from .agents import ROLES, build_agent
 from .llm import ClaudeClient, build_client
+from .runner import RunRecord, Runner
 from .reporting import growth_review
 from .tools import Toolbox
 from .workspace import Workspace
@@ -53,6 +54,20 @@ class Orchestrator:
             client=client or build_client(workspace.settings),
         )
 
+
+    def _run(self, role: str, task: str, max_iterations: int) -> RunRecord:
+        """Every cycle goes through the Runner, so every cycle is numbered.
+
+        The state above is gathered with this desk's toolbox — reads only —
+        but the run itself gets a fresh, numbered, isolated stack like any
+        other. A standing cycle that skipped numbering would be exactly the
+        run nobody could trace later.
+        """
+        runner = Runner(settings=self.workspace.settings, data_dir=self.workspace.settings.data_dir)
+        if self.client is not None:
+            runner.client_factory = lambda _s: self.client
+        return runner.run(role, task, max_iterations=max_iterations)
+
     def agent(self, role: str) -> Agent:
         return build_agent(role, self.workspace, self.toolbox, self.client)
 
@@ -72,15 +87,15 @@ class Orchestrator:
         best = max(scores, key=lambda role: scores[role])
         return best if scores[best] > 0 else "director"
 
-    def handle(self, task: str, role: str | None = None) -> AgentRun:
+    def handle(self, task: str, role: str | None = None) -> RunRecord:
         chosen = role or self.route(task)
         if chosen not in ROLES:
             raise ValueError(f"unknown role '{chosen}'; expected one of {', '.join(ROLES)}")
-        return self.agent(chosen).run(task)
+        return self._run(chosen, task, max_iterations=MAX_ITERATIONS)
 
     # --- daily operating loop -------------------------------------------
 
-    def daily_loop(self, focus: str = "") -> AgentRun:
+    def daily_loop(self, focus: str = "") -> RunRecord:
         """Review → prioritize → research → plan → execute → record → learn."""
         state = {
             "pipeline": self.workspace.crm.pipeline(),
@@ -116,11 +131,11 @@ Work the cycle in order:
 Finish with a short report: what you did, what changed in the CRM, what is
 waiting on a human, and the single most valuable thing to do next.
 """
-        return self.agent("director").run(task, max_iterations=16)
+        return self._run("director", task, max_iterations=16)
 
     # --- weekly growth review --------------------------------------------
 
-    def weekly_review(self, days: int = 7) -> AgentRun:
+    def weekly_review(self, days: int = 7) -> RunRecord:
         metrics = growth_review(self.workspace, days=days)
         task = f"""\
 Produce the weekly growth review.
@@ -143,4 +158,4 @@ first, each with the account or segment it applies to and why it beats the
 alternatives. If the data shows part of the system itself is
 underperforming, file an improvement proposal.
 """
-        return self.agent("director").run(task, max_iterations=10)
+        return self._run("director", task, max_iterations=10)

@@ -85,6 +85,39 @@ the approval queue.
 
 ---
 
+## Every run has a number
+
+A number is issued at creation — before the agent takes its first turn — so a
+run that fails immediately is still findable. One sequence covers every agent,
+current and future: `RUN-000001` is a run, not an intake run.
+
+```bash
+python -m lumia.cli runs                # newest first, across all agents
+python -m lumia.cli runs RUN-000042     # everything that run touched
+python -m lumia.cli runs --role intake
+```
+
+The number reaches what the run produced. `LocalStore` stamps `_run` on every
+record written while a run is active, so an escalation, a sent message or an
+approval can be traced back to the job that caused it — including from tools
+that do not exist yet, because the stamp is in the store rather than in each
+tool. Records written outside a run are left unstamped: seeding is not a run
+and should not claim to be.
+
+Allocation is done under an exclusive file lock, so two workers cannot take
+the same number. A test hands 200 numbers to eight concurrent threads and
+asserts they are exactly 1–200; a lost counter file resumes from the highest
+run already recorded rather than restarting at one. Skipping a range is
+survivable — two runs answering to the same reference would make every record
+citing it ambiguous.
+
+The standing cycles go through the same path. `comms intake`, `daily-log`,
+`dispatch`, `followups`, `review` and the growth cycles each get their own
+number and their own cold, isolated stack; a cycle that skipped numbering
+would be exactly the run nobody could trace later.
+
+---
+
 ## The control room
 
 A page that drives the send gate live: type a message, pick who it goes to,

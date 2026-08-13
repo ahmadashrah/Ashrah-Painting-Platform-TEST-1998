@@ -144,6 +144,8 @@ class ApprovalRequest:
     agent: str = ""
     account_id: str = ""
     project_id: str = ""
+    #: Which run raised this, so an approval can be traced to its job.
+    run_ref: str = ""
     status: str = "pending"      # pending | approved | rejected | executed
     decided_by: str = ""
     decision_note: str = ""

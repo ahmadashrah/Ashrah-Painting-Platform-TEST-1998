@@ -48,7 +48,8 @@ def _print(payload: Any) -> None:
 
 
 def _report_run(run: Any) -> None:
-    print(f"\n[{run.role}] {run.summary()} — stopped: {run.stopped_because}\n")
+    reference = getattr(run, "reference", "") or "unnumbered"
+    print(f"\n{reference}  [{run.role}] {run.summary()} — stopped: {run.stopped_because}\n")
     for call in run.tool_calls:
         mark = "OK " if call.executed else "GATE"
         print(f"  {mark} L{call.level} {call.tool}: {call.result_summary}")
@@ -80,6 +81,12 @@ def main(argv: list[str] | None = None) -> int:
     gate_cmd.add_argument("--arg", action="append", default=[], metavar="KEY=VALUE",
                           help="tool argument, repeatable")
 
+    runs_cmd = sub.add_parser("runs", help="numbered run history, newest first")
+    runs_cmd.add_argument("reference", nargs="?", default="",
+                          help="a run number or reference (42, RUN-000042) to trace in full")
+    runs_cmd.add_argument("--role", default="", help="filter by agent")
+    runs_cmd.add_argument("--limit", type=int, default=20)
+
     run_cmd = sub.add_parser("run", help="give Lumia a task")
     run_cmd.add_argument("task", help="what you want done")
     run_cmd.add_argument("--role", choices=GROWTH_ROLES, help="force a specialist instead of auto-routing")
@@ -109,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
         _print(Lumia(settings=ws.settings).status())
         return 0
 
-    if args.command in {"agents", "screen", "gate"}:
+    if args.command in {"agents", "screen", "gate", "runs"}:
         return _facade(ws, args)
 
     if args.command == "seed":
@@ -160,6 +167,29 @@ def _facade(ws: Workspace, args: argparse.Namespace) -> int:
                   f"L3 {len(agent.approval_required)} need a human")
             if agent.approval_required:
                 print(f"  needs approval: {', '.join(agent.approval_required)}")
+        return 0
+
+    if args.command == "runs":
+        if args.reference:
+            trace = lumia.runner.trace(args.reference)
+            if "error" in trace:
+                print(f"error: {trace['error']}", file=sys.stderr)
+                return 2
+            _print(trace)
+            return 0
+        history = lumia.runs(limit=args.limit, role=args.role)
+        if not history:
+            print("No runs recorded yet.")
+            return 0
+        for record in history:
+            held = len(record.get("tools_gated") or [])
+            print(
+                f"{record.get('reference', '?'):<12} {record.get('role', ''):<14}"
+                f" {record.get('status', ''):<9} {record.get('started_at', '')[:19]}"
+                f"  {len(record.get('tools_executed') or [])} action(s)"
+                + (f", {held} held" if held else "")
+            )
+            print(f"{'':<12} {str(record.get('task', ''))[:90]}")
         return 0
 
     if args.command == "screen":

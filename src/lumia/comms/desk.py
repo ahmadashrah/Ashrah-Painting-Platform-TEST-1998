@@ -18,9 +18,10 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from ..agent import Agent, AgentRun
+from ..agent import MAX_ITERATIONS, Agent
 from ..agents import COMMS_ROLES, build_agent
 from ..llm import ClaudeClient, build_client
+from ..runner import RunRecord, Runner
 from ..tools import Toolbox
 from ..workspace import Workspace
 from ..domain.projects import today_iso
@@ -67,6 +68,20 @@ class CommunicationDesk:
             client=client or build_client(workspace.settings),
         )
 
+
+    def _run(self, role: str, task: str, max_iterations: int) -> RunRecord:
+        """Every cycle goes through the Runner, so every cycle is numbered.
+
+        The state above is gathered with this desk's toolbox — reads only —
+        but the run itself gets a fresh, numbered, isolated stack like any
+        other. A standing cycle that skipped numbering would be exactly the
+        run nobody could trace later.
+        """
+        runner = Runner(settings=self.workspace.settings, data_dir=self.workspace.settings.data_dir)
+        if self.client is not None:
+            runner.client_factory = lambda _s: self.client
+        return runner.run(role, task, max_iterations=max_iterations)
+
     def agent(self, role: str) -> Agent:
         return build_agent(role, self.workspace, self.toolbox, self.client)
 
@@ -83,15 +98,15 @@ class CommunicationDesk:
         # Client reporting is the default: most communication is outward.
         return best if scores[best] > 0 else "client_comms"
 
-    def handle(self, task: str, role: str | None = None) -> AgentRun:
+    def handle(self, task: str, role: str | None = None) -> RunRecord:
         chosen = role or self.route(task)
         if chosen not in COMMS_ROLES:
             raise ValueError(f"unknown role '{chosen}'; expected one of {', '.join(COMMS_ROLES)}")
-        return self.agent(chosen).run(task)
+        return self._run(chosen, task, max_iterations=MAX_ITERATIONS)
 
     # --- intake ------------------------------------------------------------
 
-    def intake(self, project_id: str = "", work_date: str = "") -> AgentRun:
+    def intake(self, project_id: str = "", work_date: str = "") -> RunRecord:
         """Process the field submissions that are not yet usable."""
         on = work_date or today_iso()
         projects = (
@@ -138,11 +153,11 @@ For each submission:
 Finish with: what you processed, what conflicts you found, what you asked
 for, and what is ready for client reporting.
 """
-        return self.agent("intake").run(task, max_iterations=16)
+        return self._run("intake", task, max_iterations=16)
 
     # --- daily client reporting ---------------------------------------------
 
-    def daily_logs(self, project_id: str = "", log_date: str = "") -> AgentRun:
+    def daily_logs(self, project_id: str = "", log_date: str = "") -> RunRecord:
         """Compose and send the client-facing daily log for each live project."""
         on = log_date or today_iso()
         projects = (
@@ -190,11 +205,11 @@ For each project:
 Finish with: which logs went out, which are held and why, and what is now
 waiting on the client.
 """
-        return self.agent("client_comms").run(task, max_iterations=18)
+        return self._run("client_comms", task, max_iterations=18)
 
     # --- crew dispatch --------------------------------------------------------
 
-    def dispatch(self, project_id: str = "", work_date: str = "") -> AgentRun:
+    def dispatch(self, project_id: str = "", work_date: str = "") -> RunRecord:
         """Tell each crew where to be and what to do."""
         on = work_date or today_iso()
         projects = (
@@ -240,11 +255,11 @@ instead.
 Finish with who was dispatched, who has not confirmed, and anything you had
 to leave unanswered.
 """
-        return self.agent("crew_comms").run(task, max_iterations=16)
+        return self._run("crew_comms", task, max_iterations=16)
 
     # --- follow-up sweep --------------------------------------------------------
 
-    def followups(self) -> AgentRun:
+    def followups(self) -> RunRecord:
         """Chase unanswered questions, overdue items and failed deliveries."""
         state = {
             "unanswered": self.toolbox.call("unanswered_communications", {}),
@@ -273,11 +288,11 @@ Current state, already fetched:
 Finish with what you chased, what you deliberately left alone, and what
 needs a human.
 """
-        return self.agent("crew_comms").run(task, max_iterations=14)
+        return self._run("crew_comms", task, max_iterations=14)
 
     # --- performance review -------------------------------------------------------
 
-    def review(self, days: int = 7) -> AgentRun:
+    def review(self, days: int = 7) -> RunRecord:
         metrics = communication_review(self.workspace, days=days)
         task = f"""\
 Produce the communication performance review.
@@ -304,4 +319,4 @@ timing or employee training. Recommendations are proposals until management
 approves them — if the evidence shows part of the system itself is
 underperforming, file an improvement proposal.
 """
-        return self.agent("escalation").run(task, max_iterations=12)
+        return self._run("escalation", task, max_iterations=12)
