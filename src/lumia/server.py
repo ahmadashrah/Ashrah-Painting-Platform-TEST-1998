@@ -21,6 +21,7 @@ service, and a zero-dependency server is one less thing to keep current.
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -31,8 +32,10 @@ from typing import Any
 from .agents import COMMS_ROLES, ROLE_TOOLS
 from .autonomy import AUTO_SENDABLE_KINDS, TOOL_LEVELS, AutonomyLevel, classify
 from .comms.screening import screen
+from .config import SETTINGS
 from .domain.projects import CommKind, RecipientRole
 from .facade import PURPOSE
+from .runner import Runner
 
 log = logging.getLogger("lumia.server")
 
@@ -40,6 +43,24 @@ PAGE = Path(__file__).resolve().parents[2] / "docs" / "index.html"
 
 #: Requests larger than this are refused rather than read into memory.
 MAX_BODY_BYTES = 64 * 1024
+
+#: Running an agent spends tokens and can send real messages, so it is off
+#: unless LUMIA_RUN_TOKEN is set and the caller presents it. A hosted URL is
+#: reachable by anyone who has it; "off by default" is the only safe default.
+RUN_TOKEN = os.environ.get("LUMIA_RUN_TOKEN", "")
+
+#: Web runs are capped below the CLI's limit — a browser request that takes
+#: twelve model turns has usually timed out at some proxy before it returns.
+WEB_MAX_ITERATIONS = 8
+
+
+def runs_enabled() -> bool:
+    return bool(RUN_TOKEN and SETTINGS.anthropic_api_key)
+
+
+def _token_ok(handler: BaseHTTPRequestHandler, payload: dict[str, Any]) -> bool:
+    supplied = str(handler.headers.get("X-Lumia-Token") or payload.get("token") or "")
+    return bool(supplied) and hmac.compare_digest(supplied, RUN_TOKEN)
 
 
 def agent_roster() -> list[dict[str, Any]]:
@@ -138,6 +159,8 @@ class Handler(BaseHTTPRequestHandler):
                 "routine_kinds": sorted(AUTO_SENDABLE_KINDS),
                 "kinds": [k.value for k in CommKind],
                 "roles": [r.value for r in RecipientRole],
+                "runs_enabled": runs_enabled(),
+                "model_available": bool(SETTINGS.anthropic_api_key),
             })
 
         if path == "/api/agents":
@@ -166,7 +189,48 @@ class Handler(BaseHTTPRequestHandler):
             kind = str(payload.get("kind") or CommKind.OTHER.value)
             return self._send(200, gate_verdict(kind, role, subject, text))
 
+        if path == "/api/run":
+            return self._run(payload)
+
         return self._send(404, {"error": f"no route {path}"})
+
+    def _run(self, payload: dict[str, Any]) -> None:
+        """Run one agent, cold. Off unless a token is configured and presented."""
+        if not RUN_TOKEN:
+            return self._send(503, {
+                "error": "running agents over HTTP is disabled",
+                "fix": "set LUMIA_RUN_TOKEN in the host's variables to enable it, "
+                       "then send that token as X-Lumia-Token.",
+            })
+        if not SETTINGS.anthropic_api_key:
+            return self._send(503, {
+                "error": "ANTHROPIC_API_KEY is not set, so agents cannot run",
+                "fix": "add it to the host's variables. Screening and the gate work without it.",
+            })
+        if not _token_ok(self, payload):
+            return self._send(403, {"error": "wrong or missing token"})
+
+        role = str(payload.get("role") or "")
+        task = str(payload.get("task") or "").strip()
+        if role not in ROLE_TOOLS:
+            return self._send(400, {"error": f"unknown agent '{role}'"})
+        if not task:
+            return self._send(400, {"error": "say what you want the agent to do"})
+
+        record = Runner().run(role, task, max_iterations=WEB_MAX_ITERATIONS)
+        return self._send(200, {
+            "id": record.id,
+            "role": record.role,
+            "status": record.status,
+            "reply": record.reply,
+            "iterations": record.iterations,
+            "did": record.tools_executed,
+            "held_for_approval": record.tools_gated,
+            "approvals": record.approvals_raised,
+            "seconds": record.duration_seconds,
+            "error": record.error,
+            "isolated": record.isolated,
+        })
 
 
 def main() -> int:

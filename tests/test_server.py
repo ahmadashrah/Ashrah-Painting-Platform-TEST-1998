@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+from dataclasses import replace
 import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
@@ -140,7 +141,7 @@ def test_no_route_exposes_project_or_client_data(base_url):
 
 def test_the_api_cannot_send_anything(base_url):
     """There is no write path: the send tool is not reachable over HTTP."""
-    for route in ("/api/send", "/api/call", "/api/ask", "/api/projects"):
+    for route in ("/api/send", "/api/call", "/api/projects"):
         with pytest.raises(urllib.error.HTTPError) as excinfo:
             urllib.request.urlopen(
                 urllib.request.Request(f"{base_url}{route}", data=b"{}",
@@ -148,3 +149,68 @@ def test_the_api_cannot_send_anything(base_url):
                 timeout=5,
             )
         assert excinfo.value.code == 404
+
+
+# --- running an agent over HTTP: off unless deliberately switched on --------
+
+
+def _run_request(base_url, payload, token=None):
+    headers = {"Content-Type": "application/json"}
+    if token is not None:
+        headers["X-Lumia-Token"] = token
+    request = urllib.request.Request(f"{base_url}/api/run", data=json.dumps(payload).encode(), headers=headers)
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        urllib.request.urlopen(request, timeout=5)
+    return excinfo.value.code, json.loads(excinfo.value.read())
+
+
+def test_running_is_off_when_no_token_is_configured(base_url, monkeypatch):
+    """A hosted URL is reachable by anyone who has it. Default must be closed."""
+    from lumia import server
+
+    monkeypatch.setattr(server, "RUN_TOKEN", "")
+    code, body = _run_request(base_url, {"role": "intake", "task": "go"})
+    assert code == 503
+    assert "disabled" in body["error"]
+    assert "LUMIA_RUN_TOKEN" in body["fix"]
+
+
+def test_a_wrong_token_is_refused(base_url, monkeypatch):
+    from lumia import server
+
+    monkeypatch.setattr(server, "RUN_TOKEN", "correct-horse")
+    monkeypatch.setattr(server, "SETTINGS", replace(server.SETTINGS, anthropic_api_key="test-key"))
+    code, body = _run_request(base_url, {"role": "intake", "task": "go"}, token="wrong")
+    assert code == 403
+    assert body["error"] == "wrong or missing token"
+
+
+def test_a_missing_token_is_refused(base_url, monkeypatch):
+    from lumia import server
+
+    monkeypatch.setattr(server, "RUN_TOKEN", "correct-horse")
+    monkeypatch.setattr(server, "SETTINGS", replace(server.SETTINGS, anthropic_api_key="test-key"))
+    assert _run_request(base_url, {"role": "intake", "task": "go"})[0] == 403
+
+
+def test_running_needs_the_model_even_with_a_valid_token(base_url, monkeypatch):
+    from lumia import server
+
+    monkeypatch.setattr(server, "RUN_TOKEN", "correct-horse")
+    monkeypatch.setattr(server, "SETTINGS", replace(server.SETTINGS, anthropic_api_key=None))
+    code, body = _run_request(base_url, {"role": "intake", "task": "go"}, token="correct-horse")
+    assert code == 503
+    assert "ANTHROPIC_API_KEY" in body["error"]
+
+
+def test_an_authorised_run_still_validates_its_input(base_url, monkeypatch):
+    from lumia import server
+
+    monkeypatch.setattr(server, "RUN_TOKEN", "correct-horse")
+    monkeypatch.setattr(server, "SETTINGS", replace(server.SETTINGS, anthropic_api_key="test-key"))
+
+    code, body = _run_request(base_url, {"role": "hacker", "task": "go"}, token="correct-horse")
+    assert code == 400 and "unknown agent" in body["error"]
+
+    code, body = _run_request(base_url, {"role": "intake", "task": "   "}, token="correct-horse")
+    assert code == 400

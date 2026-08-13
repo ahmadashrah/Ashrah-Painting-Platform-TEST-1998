@@ -35,7 +35,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .agent import AgentRun
 from .agents import COMMS_ROLES, GROWTH_ROLES, ROLE_TOOLS, build_agent
 from .autonomy import TOOL_LEVELS, AutonomyLevel, classify
 from .comms.desk import ROUTING_HINTS as COMMS_HINTS
@@ -49,6 +48,7 @@ from .llm import ClaudeClient, MissingAPIKey
 from .orchestrator import ROUTING_HINTS as GROWTH_HINTS
 from .orchestrator import Orchestrator
 from .reporting import growth_review
+from .runner import Runner, RunRecord
 from .seed import seed_demo_data
 from .tools import Toolbox
 from .workspace import Workspace
@@ -310,15 +310,27 @@ class Lumia:
 
     # --- model-backed ---------------------------------------------------------
 
-    def ask(self, task: str, role: str | None = None) -> AgentRun:
-        """Give the platform a task and let it pick the right specialist."""
+    def ask(self, task: str, role: str | None = None) -> Any:
+        """Give the platform a task and let it pick the right specialist.
+
+        Every call is an isolated run: its own workspace, toolbox, client
+        and conversation, built fresh and thrown away. Nothing carries over
+        from the previous run — see `runner.py`.
+        """
         chosen = role or self.route(task)
+        if chosen not in ROLE_TOOLS:
+            raise ValueError(f"unknown role '{chosen}'; expected one of {', '.join(sorted(ROLE_TOOLS))}")
         self._require_model(f"ask({task[:40]!r})")
-        if chosen in COMMS_ROLES:
-            return self.comms.handle(task, role=chosen)
-        if chosen in GROWTH_ROLES:
-            return self.growth.handle(task, role=chosen)
-        raise ValueError(f"unknown role '{chosen}'; expected one of {', '.join(sorted(ROLE_TOOLS))}")
+        return self.runner.run(chosen, task)
+
+    @property
+    def runner(self) -> Runner:
+        """Builds a cold stack per run. Deliberately not cached across runs."""
+        return Runner(settings=self.settings, data_dir=self.workspace.settings.data_dir)
+
+    def runs(self, limit: int = 20, role: str = "") -> list[dict[str, Any]]:
+        """What each agent has done, newest first."""
+        return self.runner.history(limit=limit, role=role)
 
     def _require_model(self, what: str) -> None:
         if not self.live:

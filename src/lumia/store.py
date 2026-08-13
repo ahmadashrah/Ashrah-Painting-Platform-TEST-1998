@@ -36,6 +36,8 @@ COLLECTIONS = (
     "communications",
     "open_items",
     "escalations",
+    # Every agent run, isolated and recorded — see runner.py.
+    "runs",
 )
 
 
