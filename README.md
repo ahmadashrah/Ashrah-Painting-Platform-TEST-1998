@@ -85,6 +85,80 @@ the approval queue.
 
 ---
 
+## The operator's window
+
+Every step a run takes is an event, and an operator can watch them live or
+read them back afterwards.
+
+```bash
+python -m lumia.cli watch                 # live, every run
+python -m lumia.cli watch RUN-000042      # live, one run
+python -m lumia.cli steps RUN-000042      # what it did, after the fact
+```
+
+```
+01:36:12.824 RUN-000042  run.started      task=order primer budget_seconds=120.0
+01:36:12.825 RUN-000042  turn.started     turn=1 remaining_seconds=120.0
+01:36:12.825 RUN-000042  model.replied    turn=1 stop_reason=tool_use tool_calls=1
+01:36:12.825 RUN-000042  tool.proposed    tool=place_material_order arguments={…}
+01:36:12.826 RUN-000042  gate.decided     tool=place_material_order level=3 reason=…
+01:36:12.826 RUN-000042  tool.gated       tool=place_material_order approval_id=appr_…
+01:36:12.827 RUN-000042  run.finished     actions=1 held=1 timed_out=False killed=False
+```
+
+The two lines worth watching are `gate.decided` and `tool.gated`: what the
+agent asked to do, what the harness decided, and why.
+
+**Attaching your own hook** takes one call. It sees everything, including
+runs started by code you did not write and agents that do not exist yet:
+
+```python
+from lumia.observability import HOOKS
+
+HOOKS.subscribe(lambda event: my_dashboard.push(event.to_dict()), name="ops")
+```
+
+Two rules protect the run from the hook. A subscriber that raises is logged
+and skipped — an operator's broken dashboard cannot take down the crew
+dispatch, and a test asserts a later hook still fires after an earlier one
+throws. And payloads are trimmed before recording: a tool result can be 60KB,
+and the step log is for watching, not for storing.
+
+## Stopping a run
+
+Two mechanisms, because they fail differently.
+
+**The kill switch** is for a run doing the wrong thing. It is file-based, so
+it reaches a run in another process — a scheduled cycle, a web request, a
+worker:
+
+```bash
+python -m lumia.cli kill RUN-000042 --reason "wrong recipient"
+python -m lumia.cli kill ALL --reason "stop everything"
+python -m lumia.cli kill ALL --release
+```
+
+The run stops at its next step and says what had already happened. A
+reference is never reused, so a request can only ever mean the run it names —
+including one armed before that run starts.
+
+**The watchdog** is for a run that has stopped policing itself. The time
+budget is cooperative: it works because the loop checks it. That covers a
+slow run, not one blocked *below* the loop — a socket opened without a
+timeout, a library that swallowed the one we passed, a retry buried in a
+vendor SDK. A timer signal interrupts the blocked call itself, 15 seconds
+past the budget, so the clean stop normally wins the race. Measured: a call
+that would have blocked for 60 seconds is interrupted after 5.
+
+It needs the main thread of a POSIX process. Under a thread pool it does
+nothing, which is exactly why the cooperative checks sit at three points
+rather than being left to a watchdog that may not be there.
+
+Both are recorded. A killed or interrupted run keeps its number, its step log
+and its place in `lumia runs`.
+
+---
+
 ## No communication takes longer than 120 seconds
 
 A crew is at a locked door, a client leaves site at five, a supplier's
@@ -476,7 +550,7 @@ fails if you forget.
 ## Development
 
 ```bash
-python -m pytest -q          # 267 tests, no network, no API key needed
+python -m pytest -q          # 289 tests, no network, no API key needed
 ```
 
 The suite drives the agent loop with a scripted fake client, so both gates,

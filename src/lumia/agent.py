@@ -15,6 +15,10 @@ from typing import Any
 
 from .autonomy import ApprovalRequest, AutonomyLevel, classify
 from .deadline import Deadline
+from .observability import (
+    GATE_DECIDED, MODEL_REPLIED, RUN_KILLED, TOOL_EXECUTED, TOOL_GATED,
+    TOOL_PROPOSED, TURN_STARTED, Killed, RunObserver,
+)
 from .llm import ClaudeClient, build_client, text_of, tool_uses
 from .prompts import system_prompt
 from .tools import Toolbox
@@ -46,6 +50,7 @@ class AgentRun:
     iterations: int = 0
     stopped_because: str = "end_turn"
     timed_out: bool = False
+    killed: bool = False
 
     def summary(self) -> str:
         executed = sum(1 for c in self.tool_calls if c.executed)
@@ -82,8 +87,12 @@ class Agent:
         task: str,
         max_iterations: int = MAX_ITERATIONS,
         deadline: Deadline | None = None,
+        observer: RunObserver | None = None,
+        kill_switch: Any = None,
     ) -> AgentRun:
         run = AgentRun(role=self.role, task=task)
+        self.observer = observer
+        self.kill_switch = kill_switch
         messages: list[dict[str, Any]] = [{"role": "user", "content": task}]
         schemas = self.toolbox.schemas(self.allowed_tools)
         pause_resumes = 0
@@ -96,10 +105,24 @@ class Agent:
         for iteration in range(1, max_iterations + 1):
             run.iterations = iteration
 
+            stop = self._stop_requested()
+            if stop is not None:
+                return self._killed(run, stop, "starting another turn")
+
             if deadline is not None and not deadline.usable:
                 return self._out_of_time(run, deadline, "starting another turn")
 
+            if observer is not None:
+                observer.emit(TURN_STARTED, turn=iteration,
+                              remaining_seconds=deadline.remaining if deadline else None)
+                observer.budget_check(deadline)
+
             response = self.client.create(system=self.system, messages=messages, tools=schemas)
+
+            if observer is not None:
+                observer.emit(MODEL_REPLIED, turn=iteration,
+                              stop_reason=str(getattr(response, "stop_reason", "")),
+                              tool_calls=len(tool_uses(response)))
 
             # Safety classifiers can decline; check before reading content.
             if getattr(response, "stop_reason", None) == "refusal":
@@ -130,6 +153,10 @@ class Agent:
             # flight. A send cancelled mid-write may still have been delivered,
             # and a message the record shows as unsent but the client received
             # is worse than one that finishes a few seconds late.
+            stop = self._stop_requested()
+            if stop is not None:
+                return self._killed(run, stop, f"running {calls[0].name}")
+
             if deadline is not None and not deadline.usable:
                 return self._out_of_time(run, deadline, f"running {calls[0].name}")
 
@@ -141,6 +168,30 @@ class Agent:
             f"Stopped after {max_iterations} turns without finishing. "
             "Narrow the task or raise the iteration limit."
         )
+        return run
+
+    def _stop_requested(self) -> dict[str, Any] | None:
+        """Whether an operator has asked this run to stop."""
+        switch = getattr(self, "kill_switch", None)
+        if switch is None or not self.ws.run_ref:
+            return None
+        return switch.requested(self.ws.run_ref)
+
+    def _killed(self, run: AgentRun, stop: dict[str, Any], before: str) -> AgentRun:
+        """Stop because an operator said so, and say what had already happened."""
+        done = [c.tool for c in run.tool_calls if c.executed]
+        run.stopped_because = "killed"
+        run.killed = True
+        reason = str(stop.get("reason") or "no reason given")
+        run.reply = (
+            f"Stopped by an operator before {before} — {reason}. "
+            + (f"Already completed: {', '.join(done)}. " if done else "Nothing was sent. ")
+            + "Anything not listed did not happen."
+        )
+        observer = getattr(self, "observer", None)
+        if observer is not None:
+            observer.emit(RUN_KILLED, reason=reason, scope=stop.get("scope"), before=before)
+        log.warning("run %s killed by operator: %s", self.ws.run_ref, reason)
         return run
 
     def _out_of_time(self, run: AgentRun, deadline: Deadline, before: str) -> AgentRun:
@@ -166,7 +217,14 @@ class Agent:
         arguments = dict(call.input or {})
         account = self._account_for(arguments)
         draft = self._draft_for(arguments)
+        observer = getattr(self, "observer", None)
+        if observer is not None:
+            observer.emit(TOOL_PROPOSED, tool=name, arguments=json.dumps(arguments, default=str))
+
         level, reason = classify(name, arguments, account, draft)
+
+        if observer is not None:
+            observer.emit(GATE_DECIDED, tool=name, level=int(level), reason=reason)
 
         if level is AutonomyLevel.APPROVAL_REQUIRED:
             request = self.ws.approvals.submit(
@@ -194,6 +252,9 @@ class Agent:
                     result_summary=f"queued for approval as {request.id}",
                 )
             )
+            if observer is not None:
+                observer.emit(TOOL_GATED, tool=name, approval_id=request.id, reason=reason)
+
             payload = {
                 "status": "awaiting_human_approval",
                 "approval_id": request.id,
@@ -218,6 +279,8 @@ class Agent:
             )
         )
         is_error = isinstance(result, dict) and "error" in result
+        if observer is not None:
+            observer.emit(TOOL_EXECUTED, tool=name, ok=not is_error, result=_summarize(result))
         return _tool_result(call.id, result, is_error=is_error)
 
     def _account_for(self, arguments: dict[str, Any]) -> dict[str, Any] | None:

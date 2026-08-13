@@ -27,11 +27,13 @@ was it isolated" is answerable after the fact rather than assumed.
 from __future__ import annotations
 
 import logging
+import signal
 import threading
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
 
 try:  # POSIX file locking, so concurrent processes cannot take the same number
     import fcntl
@@ -45,6 +47,10 @@ from .config import SETTINGS, Settings
 from .deadline import Deadline, budget_for
 from .domain.projects import new_id
 from .llm import build_client
+from .observability import (
+    HOOKS, RUN_FAILED, RUN_FINISHED, RUN_STARTED,
+    JsonlRecorder, KillSwitch, RunObserver,
+)
 from .tools import Toolbox
 from .workspace import Workspace
 
@@ -109,6 +115,58 @@ class RunCounter:
             return nxt
 
 
+#: How long past its budget a run is allowed to keep going before it is
+#: interrupted outright. The gap exists so the cooperative stop — which
+#: exits cleanly and reports what happened — normally wins the race.
+WATCHDOG_GRACE_SECONDS = 15.0
+
+
+class HardTimeout(RuntimeError):
+    """A run was interrupted because it stopped policing itself."""
+
+
+@contextmanager
+def _watchdog(seconds: float, reference: str) -> Iterator[None]:
+    """Interrupt a run that has stopped checking its own budget.
+
+    The deadline in `deadline.py` is cooperative: it works because the loop
+    looks at it between turns and before tool calls. That covers the runs
+    that are merely slow. It does not cover a run blocked *below* that
+    level — a socket opened without a timeout, a library that swallows the
+    one we passed, a retry loop inside a vendor SDK. Nothing is checking
+    anything there, so nothing stops.
+
+    A timer signal interrupts the blocked call itself, which is the only
+    thing that reliably does.
+
+    This needs the main thread of a POSIX process. Under a thread pool or
+    on Windows it does nothing, and the cooperative checks are all there
+    is — which is precisely why those are placed at three points rather
+    than one, rather than being left to a watchdog that may not be there.
+    """
+    available = (
+        hasattr(signal, "SIGALRM")
+        and threading.current_thread() is threading.main_thread()
+    )
+    if not available or seconds <= 0:
+        yield
+        return
+
+    def interrupt(_signum: int, _frame: Any) -> None:
+        raise HardTimeout(
+            f"{reference} was interrupted {seconds:.0f}s in: it stopped responding to its "
+            "own time budget. Anything already sent stands; nothing further was attempted."
+        )
+
+    previous = signal.signal(signal.SIGALRM, interrupt)
+    signal.setitimer(signal.ITIMER_REAL, seconds)
+    try:
+        yield
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous)
+
+
 def _timestamp() -> str:
     """Microsecond precision, unlike the record timestamps elsewhere.
 
@@ -141,6 +199,7 @@ class RunRecord:
     duration_seconds: float = 0.0
     budget_seconds: float = 0.0
     timed_out: bool = False
+    killed: bool = False
     #: Always true. Recorded rather than assumed, so an audit does not have
     #: to take the docstring's word for it.
     isolated: bool = True
@@ -187,6 +246,29 @@ class Runner:
         # factory that returns a fresh scripted fake each time.
         self.client_factory = client_factory or (lambda s: build_client(s))
         self._counter: RunCounter | None = None
+        self._recorder_attached = False
+
+    # --- the operator's window ---------------------------------------------
+
+    @property
+    def root(self) -> Path:
+        return Path(self.data_dir or self.settings.data_dir)
+
+    @property
+    def kill_switch(self) -> KillSwitch:
+        return KillSwitch(self.root / "kill")
+
+    def recorder(self) -> JsonlRecorder:
+        """The step log every run writes to, attached once per Runner."""
+        recorder = JsonlRecorder(self.root / "events.jsonl")
+        if not self._recorder_attached:
+            HOOKS.subscribe(recorder, name="jsonl")
+            self._recorder_attached = True
+        return recorder
+
+    def steps(self, reference: str, limit: int = 500) -> list[dict[str, Any]]:
+        """Every step of one run, in order."""
+        return JsonlRecorder(self.root / "events.jsonl").read(run=reference, limit=limit)
 
     # --- numbering ---------------------------------------------------------
 
@@ -236,12 +318,32 @@ class Runner:
         # identity lives on it rather than being threaded through every call.
         workspace.stamp_run(record.reference)
 
+        recorder = self.recorder()
+        observer = RunObserver(run=record.reference, role=role)
+        switch = self.kill_switch
+        # Not cleared here: a reference is never reused, so a request for this
+        # run can only ever have been meant for this run — including one armed
+        # before it started. It is consumed when the run ends instead.
+
         agent = build_agent(role, workspace, toolbox, self.client_factory(self.settings))
         workspace.store.put("runs", record.id, record.to_dict())
         started = datetime.now()
+        observer.emit(RUN_STARTED, task=task, budget_seconds=budget, number=number)
 
         try:
-            result: AgentRun = agent.run(task, max_iterations=max_iterations, deadline=deadline)
+            with _watchdog(deadline.budget_seconds + WATCHDOG_GRACE_SECONDS, record.reference):
+                result: AgentRun = agent.run(
+                    task,
+                    max_iterations=max_iterations,
+                    deadline=deadline,
+                    observer=observer,
+                    kill_switch=switch,
+                )
+        except HardTimeout as exc:
+            record.status = "failed"
+            record.timed_out = True
+            record.error = str(exc)
+            log.warning("run %s hard-stopped: %s", record.reference, exc)
         except Exception as exc:  # a failed run is still a run, and still recorded
             record.status = "failed"
             record.error = f"{type(exc).__name__}: {exc}"
@@ -255,10 +357,22 @@ class Runner:
             record.tools_gated = [c.tool for c in result.tool_calls if not c.executed]
             record.approvals_raised = list(result.approvals_raised)
             record.timed_out = result.timed_out
+            record.killed = getattr(result, "killed", False)
 
         record.finished_at = _timestamp()
         record.duration_seconds = round((datetime.now() - started).total_seconds(), 2)
         workspace.store.put("runs", record.id, record.to_dict())
+        switch.clear(record.reference)
+        observer.emit(
+            RUN_FAILED if record.status == "failed" else RUN_FINISHED,
+            status=record.status,
+            seconds=record.duration_seconds,
+            actions=len(record.tools_executed),
+            held=len(record.tools_gated),
+            timed_out=record.timed_out,
+            killed=record.killed,
+            error=record.error,
+        )
         return record
 
     # --- history --------------------------------------------------------

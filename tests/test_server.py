@@ -214,3 +214,66 @@ def test_an_authorised_run_still_validates_its_input(base_url, monkeypatch):
 
     code, body = _run_request(base_url, {"role": "intake", "task": "   "}, token="correct-horse")
     assert code == 400
+
+
+# --- operator control over HTTP: same lock as running -----------------------
+
+
+def test_steps_are_not_readable_without_a_token(base_url):
+    """Steps narrate the company's work; a public URL must not."""
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        urllib.request.urlopen(f"{base_url}/api/steps/RUN-000001", timeout=5)
+    assert excinfo.value.code == 403
+
+
+def test_killing_is_off_without_a_token(base_url, monkeypatch):
+    from lumia import server
+
+    monkeypatch.setattr(server, "RUN_TOKEN", "")
+    code, body = _run_request(base_url, {"run": "RUN-000001"})
+    assert code == 503 or code == 404  # route exists but control is disabled
+
+
+def test_killing_needs_the_right_token(base_url, monkeypatch):
+    from lumia import server
+
+    monkeypatch.setattr(server, "RUN_TOKEN", "correct-horse")
+    request = urllib.request.Request(
+        f"{base_url}/api/kill",
+        data=json.dumps({"run": "RUN-000001"}).encode(),
+        headers={"Content-Type": "application/json", "X-Lumia-Token": "wrong"},
+    )
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        urllib.request.urlopen(request, timeout=5)
+    assert excinfo.value.code == 403
+
+
+def test_an_authorised_kill_is_accepted(base_url, monkeypatch, tmp_path):
+    from lumia import server
+
+    monkeypatch.setattr(server, "RUN_TOKEN", "correct-horse")
+    monkeypatch.setattr(server, "SETTINGS", replace(server.SETTINGS, data_dir=tmp_path))
+
+    request = urllib.request.Request(
+        f"{base_url}/api/kill",
+        data=json.dumps({"run": "RUN-000001", "reason": "wrong recipient"}).encode(),
+        headers={"Content-Type": "application/json", "X-Lumia-Token": "correct-horse"},
+    )
+    with urllib.request.urlopen(request, timeout=5) as response:
+        payload = json.loads(response.read())
+    assert payload["killing"] == "RUN-000001"
+    assert payload["reason"] == "wrong recipient"
+
+
+def test_a_kill_needs_a_target(base_url, monkeypatch):
+    from lumia import server
+
+    monkeypatch.setattr(server, "RUN_TOKEN", "correct-horse")
+    request = urllib.request.Request(
+        f"{base_url}/api/kill",
+        data=json.dumps({"run": "  "}).encode(),
+        headers={"Content-Type": "application/json", "X-Lumia-Token": "correct-horse"},
+    )
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        urllib.request.urlopen(request, timeout=5)
+    assert excinfo.value.code == 400

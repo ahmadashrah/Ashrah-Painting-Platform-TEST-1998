@@ -85,6 +85,19 @@ def main(argv: list[str] | None = None) -> int:
     gate_cmd.add_argument("--arg", action="append", default=[], metavar="KEY=VALUE",
                           help="tool argument, repeatable")
 
+    watch_cmd = sub.add_parser("watch", help="live operator window — every step as it happens")
+    watch_cmd.add_argument("reference", nargs="?", default="", help="follow one run only")
+    watch_cmd.add_argument("--replay", type=int, default=20, help="steps of history to show first")
+    watch_cmd.add_argument("--once", action="store_true", help="print what has happened and exit")
+
+    kill_cmd = sub.add_parser("kill", help="stop a run that is already going")
+    kill_cmd.add_argument("reference", help="a run reference, or ALL to stop everything")
+    kill_cmd.add_argument("--reason", default="", help="why — recorded and shown in the run's reply")
+    kill_cmd.add_argument("--release", action="store_true", help="cancel a kill request instead")
+
+    steps_cmd = sub.add_parser("steps", help="every step of one run")
+    steps_cmd.add_argument("reference", help="a run reference")
+
     runs_cmd = sub.add_parser("runs", help="numbered run history, newest first")
     runs_cmd.add_argument("reference", nargs="?", default="",
                           help="a run number or reference (42, RUN-000042) to trace in full")
@@ -120,7 +133,7 @@ def main(argv: list[str] | None = None) -> int:
         _print(Lumia(settings=ws.settings).status())
         return 0
 
-    if args.command in {"agents", "screen", "gate", "runs"}:
+    if args.command in {"agents", "screen", "gate", "runs", "watch", "kill", "steps"}:
         return _facade(ws, args)
 
     if args.command == "seed":
@@ -172,6 +185,27 @@ def _facade(ws: Workspace, args: argparse.Namespace) -> int:
             if agent.approval_required:
                 print(f"  needs approval: {', '.join(agent.approval_required)}")
         return 0
+
+    if args.command == "kill":
+        switch = lumia.runner.kill_switch
+        if args.release:
+            switch.release_all()
+            print("All kill requests cleared.")
+            return 0
+        _print(switch.request(args.reference, reason=args.reason or "stopped by operator"))
+        return 0
+
+    if args.command == "steps":
+        events = lumia.runner.steps(args.reference)
+        if not events:
+            print(f"No steps recorded for {args.reference}.")
+            return 0
+        for event in events:
+            print(_step_line(event))
+        return 0
+
+    if args.command == "watch":
+        return _watch(lumia, args)
 
     if args.command == "runs":
         if args.reference:
@@ -275,6 +309,46 @@ def _comms(ws: Workspace, args: argparse.Namespace) -> int:
         return 2
 
     _report_run(run)
+    return 0
+
+
+def _step_line(event: dict[str, Any]) -> str:
+    detail = " ".join(
+        f"{k}={v}" for k, v in (event.get("detail") or {}).items()
+        if v not in (None, "", [], {}, "None")
+    )
+    return (
+        f"{str(event.get('at', ''))[11:23]:<13}"
+        f"{event.get('run', ''):<12} "
+        f"{event.get('kind', ''):<16} {detail}"
+    )[:200]
+
+
+def _watch(lumia: Lumia, args: argparse.Namespace) -> int:
+    """Tail the step log. The operator window, in a terminal."""
+    import time
+
+    recorder = lumia.runner.recorder()
+    seen = 0
+    history = recorder.read(run=args.reference, limit=args.replay)
+    for event in history:
+        print(_step_line(event))
+    seen = len(recorder.read(run=args.reference, limit=100_000))
+
+    if args.once:
+        return 0
+
+    target = args.reference or "every run"
+    print(f"\n— watching {target}. Ctrl-C to stop —\n", file=sys.stderr)
+    try:
+        while True:
+            events = recorder.read(run=args.reference, limit=100_000)
+            for event in events[seen:]:
+                print(_step_line(event), flush=True)
+            seen = max(seen, len(events))
+            time.sleep(0.5)
+    except KeyboardInterrupt:
+        print("\n— stopped watching —", file=sys.stderr)
     return 0
 
 

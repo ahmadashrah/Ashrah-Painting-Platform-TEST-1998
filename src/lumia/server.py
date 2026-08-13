@@ -166,6 +166,21 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/agents":
             return self._send(200, {"agents": agent_roster()})
 
+        if path.startswith("/api/steps"):
+            # Steps name tools, levels and reasons — operational detail, not
+            # client data — but they are still gated behind the run token so a
+            # public URL does not narrate the company's work to strangers.
+            if not _token_ok(self, {}):
+                return self._send(403, {"error": "wrong or missing token"})
+            reference = path.rsplit("/", 1)[-1]
+            runner = Runner()
+            if reference in ("steps", ""):
+                return self._send(200, {"runs": runner.history(limit=25)})
+            return self._send(200, {
+                "run": runner.get(reference),
+                "steps": runner.steps(reference),
+            })
+
         return self._send(404, {"error": f"no route {path}"})
 
     def do_HEAD(self) -> None:  # noqa: N802
@@ -191,6 +206,18 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/api/run":
             return self._run(payload)
+
+        if path == "/api/kill":
+            if not RUN_TOKEN:
+                return self._send(503, {"error": "operator control over HTTP is disabled",
+                                        "fix": "set LUMIA_RUN_TOKEN to enable it"})
+            if not _token_ok(self, payload):
+                return self._send(403, {"error": "wrong or missing token"})
+            reference = str(payload.get("run") or "").strip()
+            if not reference:
+                return self._send(400, {"error": "name the run to stop, or ALL"})
+            return self._send(200, Runner().kill_switch.request(
+                reference, reason=str(payload.get("reason") or "stopped by operator")))
 
         return self._send(404, {"error": f"no route {path}"})
 
