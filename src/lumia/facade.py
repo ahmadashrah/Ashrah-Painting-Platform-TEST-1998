@@ -44,7 +44,7 @@ from .comms.screening import screen as screen_text
 from .comms.seed import seed_demo_projects
 from .config import SETTINGS, Settings
 from .domain.projects import RecipientRole
-from .llm import ClaudeClient, MissingAPIKey
+from .llm import MissingAPIKey, build_client
 from .orchestrator import ROUTING_HINTS as GROWTH_HINTS
 from .orchestrator import Orchestrator
 from .reporting import growth_review
@@ -127,7 +127,7 @@ class Lumia:
             self._growth = Orchestrator(
                 workspace=self.workspace,
                 toolbox=self.toolbox,
-                client=self._client or ClaudeClient(self.settings),
+                client=self._client or build_client(self.settings),
             )
         return self._growth
 
@@ -138,7 +138,7 @@ class Lumia:
             self._comms = CommunicationDesk(
                 workspace=self.workspace,
                 toolbox=self.toolbox,
-                client=self._client or ClaudeClient(self.settings),
+                client=self._client or build_client(self.settings),
             )
         return self._comms
 
@@ -232,7 +232,7 @@ class Lumia:
 
     def agent(self, role: str) -> Any:
         """One configured specialist, ready to run."""
-        return build_agent(role, self.workspace, self.toolbox, self._client or ClaudeClient(self.settings))
+        return build_agent(role, self.workspace, self.toolbox, self._client or build_client(self.settings))
 
     def tools(self, role: str = "") -> list[dict[str, Any]]:
         """Tool names, levels and descriptions — the whole surface, or one role's."""

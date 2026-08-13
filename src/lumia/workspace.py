@@ -15,6 +15,7 @@ from .comms.ledger import CommunicationLedger
 from .config import SETTINGS, Settings
 from .integrations.crm import CRM
 from .integrations.messaging import EmailService, SMSService
+from .integrations.openai import OpenAIService
 from .integrations.research import ConstructionData, WebSearch
 from .integrations.scheduling import CalendarService, WeatherService
 from .memory import Memory
@@ -35,6 +36,7 @@ class Workspace:
     weather: WeatherService
     search: WebSearch
     construction: ConstructionData
+    openai: OpenAIService
 
     @classmethod
     def build(cls, settings: Settings | None = None, data_dir: Path | None = None) -> "Workspace":
@@ -43,12 +45,16 @@ class Workspace:
         root.mkdir(parents=True, exist_ok=True)
 
         store = LocalStore(root / "lumia.json")
+        openai = OpenAIService(settings.service("openai"))
         return cls(
             settings=settings,
             store=store,
             crm=CRM(settings.service("crm"), store),
             comms=CommunicationLedger(store),
-            memory=Memory(store),
+            # Memory embeds through OpenAI when configured, and falls back to
+            # keyword matching when it is not — see Memory.recall.
+            memory=Memory(store, embedder=openai, model=settings.embed_model),
+            openai=openai,
             approvals=ApprovalQueue(root / "approvals.json"),
             email=EmailService(settings.service("email")),
             sms=SMSService(settings.service("sms")),
@@ -62,6 +68,7 @@ class Workspace:
         """Which integrations are live vs simulated — shown at startup."""
         services = {
             "crm": self.crm,
+            "openai": self.openai,
             "email": self.email,
             "sms": self.sms,
             "calendar": self.calendar,

@@ -81,6 +81,9 @@ TOOL_LEVELS: dict[str, AutonomyLevel] = {
     "record_field_submission": AutonomyLevel.AUTONOMOUS,
     "process_field_submission": AutonomyLevel.AUTONOMOUS,
     "verify_field_submission": AutonomyLevel.AUTONOMOUS,
+    # Reading a recording or a photo is analysis, not action.
+    "transcribe_field_submission": AutonomyLevel.AUTONOMOUS,
+    "describe_media": AutonomyLevel.AUTONOMOUS,
     "list_field_submissions": AutonomyLevel.AUTONOMOUS,
     "add_project_media": AutonomyLevel.AUTONOMOUS,
     "caption_media": AutonomyLevel.AUTONOMOUS,

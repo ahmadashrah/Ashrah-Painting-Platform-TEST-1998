@@ -36,7 +36,7 @@ from .agent import MAX_ITERATIONS, AgentRun
 from .agents import ROLE_TOOLS, build_agent
 from .config import SETTINGS, Settings
 from .domain.projects import new_id
-from .llm import ClaudeClient
+from .llm import build_client
 from .tools import Toolbox
 from .workspace import Workspace
 
@@ -99,7 +99,7 @@ class Runner:
         # A factory, not a client: reusing one client across runs would be
         # the exact sharing this module exists to prevent. Tests pass a
         # factory that returns a fresh scripted fake each time.
-        self.client_factory = client_factory or (lambda s: ClaudeClient(s))
+        self.client_factory = client_factory or (lambda s: build_client(s))
 
     # --- building one cold stack -----------------------------------------
 

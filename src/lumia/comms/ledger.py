@@ -144,6 +144,43 @@ class CommunicationLedger:
             records = [r for r in records if str(r.get("work_date", "")) == work_date]
         return sorted(records, key=lambda r: str(r.get("submitted_at", "")))
 
+    def attach_transcript(self, submission_id: str, text: str, *, source: str = "whisper") -> dict[str, Any]:
+        """Write the transcript of a voice note, once.
+
+        The transcript is an immutable field — it is what the recording
+        says, and rewriting it would break the chain from recording to sent
+        message. But a submission that arrived as audio has no transcript
+        *yet*, and machine transcription is how it gets one. So this fills
+        an empty transcript and refuses a populated one, rather than
+        loosening the rule for everything.
+
+        A correction to an existing transcript is a human decision: record
+        it in `normalized_summary` with a note, where the revision trail
+        shows what changed and why.
+        """
+        record = self.store.get("submissions", submission_id)
+        if record is None:
+            return {"error": f"no field submission with id {submission_id}"}
+        if str(record.get("transcript", "")).strip():
+            return {
+                "error": (
+                    "this submission already has a transcript, and the original is preserved. "
+                    "Record a correction in the summary instead of overwriting what was heard."
+                ),
+                "existing_transcript": record["transcript"],
+            }
+        if not text.strip():
+            return {"error": "transcription produced no text; the recording may be silent or unreadable"}
+
+        revisions = list(record.get("revisions", []))
+        revisions.append(
+            {"at": now_iso(), "action": "transcribed", "by": source, "note": "", "fields": ["transcript"]}
+        )
+        updated = self.store.patch(
+            "submissions", submission_id, {"transcript": text, "revisions": revisions}
+        )
+        return updated or {"error": f"no field submission with id {submission_id}"}
+
     def revise_submission(
         self,
         submission_id: str,

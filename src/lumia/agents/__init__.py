@@ -106,6 +106,8 @@ COMMS_ROLE_TOOLS: dict[str, list[str]] = {
         "record_field_submission",
         "process_field_submission",
         "verify_field_submission",
+        "transcribe_field_submission",
+        "describe_media",
         "list_field_submissions",
         "add_project_media",
         "caption_media",

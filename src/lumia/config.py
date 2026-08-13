@@ -19,6 +19,27 @@ DEFAULT_MODEL = "claude-opus-5"
 # low | medium | high | xhigh | max
 DEFAULT_EFFORT = "high"
 
+# OpenAI models, used where they are the better tool rather than as a
+# wholesale replacement. Whisper handles the field's Arabic, Kurdish and
+# French voice notes; the vision model reads submitted photos; embeddings
+# give memory recall by meaning instead of by shared keywords.
+DEFAULT_TRANSCRIBE_MODEL = "whisper-1"
+DEFAULT_VISION_MODEL = "gpt-4o-mini"
+DEFAULT_EMBED_MODEL = "text-embedding-3-small"
+
+
+def provider_for(model: str) -> str:
+    """Which API a model name belongs to.
+
+    Inferred rather than configured separately, so setting ASHRAH_MODEL to a
+    GPT model is all it takes to move an agent across — there is no second
+    switch to forget.
+    """
+    name = model.lower()
+    if name.startswith(("gpt-", "o1", "o3", "o4", "chatgpt")):
+        return "openai"
+    return "anthropic"
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -86,9 +107,17 @@ class Settings:
     company_email: str
     data_dir: Path
     services: dict[str, ServiceCredentials]
+    transcribe_model: str = DEFAULT_TRANSCRIBE_MODEL
+    vision_model: str = DEFAULT_VISION_MODEL
+    embed_model: str = DEFAULT_EMBED_MODEL
 
     def service(self, name: str) -> ServiceCredentials:
         return self.services.get(name, ServiceCredentials(name=name))
+
+    @property
+    def provider(self) -> str:
+        """Which API the agents' model belongs to."""
+        return provider_for(self.model)
 
 
 def load_settings() -> Settings:
@@ -96,6 +125,10 @@ def load_settings() -> Settings:
     data_dir.mkdir(parents=True, exist_ok=True)
 
     services = {
+        # OpenAI: speech-to-text for field voice notes, vision for submitted
+        # photos, embeddings for memory recall, and GPT models as a second
+        # brain for the agent loop.
+        "openai": _service("openai", "OPENAI_API_KEY", "OPENAI_BASE_URL", "https://api.openai.com/v1"),
         # Record of truth for accounts, contacts and pipeline.
         "crm": _service("crm", "CRM_API_KEY", "CRM_BASE_URL", "https://api.example-crm.com/v1"),
         # Outreach email.
@@ -144,6 +177,9 @@ def load_settings() -> Settings:
         company_email=os.environ.get("COMPANY_EMAIL", ""),
         data_dir=data_dir,
         services=services,
+        transcribe_model=os.environ.get("OPENAI_TRANSCRIBE_MODEL", DEFAULT_TRANSCRIBE_MODEL),
+        vision_model=os.environ.get("OPENAI_VISION_MODEL", DEFAULT_VISION_MODEL),
+        embed_model=os.environ.get("OPENAI_EMBED_MODEL", DEFAULT_EMBED_MODEL),
     )
 
 

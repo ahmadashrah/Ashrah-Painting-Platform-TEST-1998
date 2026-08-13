@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .autonomy import ApprovalRequest, AutonomyLevel, classify
-from .llm import ClaudeClient, text_of, tool_uses
+from .llm import ClaudeClient, build_client, text_of, tool_uses
 from .prompts import system_prompt
 from .tools import Toolbox
 from .workspace import Workspace
@@ -68,7 +68,7 @@ class Agent:
         self.role = role
         self.ws = workspace
         self.toolbox = toolbox
-        self.client = client or ClaudeClient(workspace.settings)
+        self.client = client or build_client(workspace.settings)
         self.allowed_tools = allowed_tools
 
     @property

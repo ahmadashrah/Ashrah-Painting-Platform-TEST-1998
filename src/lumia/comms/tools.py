@@ -368,6 +368,110 @@ class CommunicationTools:
             media=self.ws.comms.media_for(project_id, submission_id=str(submission.get("id", ""))),
         )
 
+    def _transcribe_submission(self, submission_id: str, audio_uri: str = "", language: str = "") -> dict[str, Any]:
+        """Transcribe a voice note into text, verbatim.
+
+        Fills an empty transcript once. It never rewrites one — a recording
+        says what it says, and the chain from audio to sent message has to
+        stay intact.
+        """
+        record = self.ws.comms.get_submission(submission_id)
+        if record is None:
+            return {"error": f"no field submission with id {submission_id}"}
+        if str(record.get("transcript", "")).strip():
+            return {
+                "error": "this submission already has a transcript; the original is preserved",
+                "transcript": record["transcript"],
+            }
+
+        source = audio_uri or str(record.get("audio_uri", ""))
+        if not source:
+            return {"error": "no recording to transcribe — pass audio_uri, or the file path"}
+        if not self.ws.openai.live:
+            return {
+                "error": "OPENAI_API_KEY is not set, so nothing can be transcribed",
+                "guidance": (
+                    "Do not write a transcript from what you expect the recording to say. "
+                    "Ask the employee to send the report as text instead."
+                ),
+            }
+
+        project = self.ws.comms.get_project(str(record.get("project_id", "")))
+        # Priming with the project's own vocabulary measurably improves proper
+        # nouns — room numbers, product names, the site's own shorthand.
+        prompt = " ".join(filter(None, [
+            str((project or {}).get("name", "")),
+            str((project or {}).get("scope_summary", "")),
+            "primer, finish coat, drywall, corridor, substrate, cure, mask, patch",
+        ]))
+        result = self.ws.openai.transcribe(
+            source,
+            model=self.ws.settings.transcribe_model,
+            language=language or str(record.get("original_language", "")),
+            prompt=prompt,
+        )
+        if "error" in result:
+            return result
+        text = str(result.get("text", "")).strip()
+        if not text:
+            return {"error": "the recording produced no text; it may be silent or unreadable"}
+
+        saved = self.ws.comms.attach_transcript(submission_id, text, source="whisper")
+        if "error" in saved:
+            return saved
+        return {
+            **saved,
+            "detected_language": result.get("language"),
+            "next_step": (
+                "Translate and clean it with process_field_submission. The transcript is now "
+                "fixed — corrections go in the summary, with a note."
+            ),
+        }
+
+    def _describe_media(self, media_id: str) -> dict[str, Any]:
+        """Read a photo and report what is visible.
+
+        Returns a description and a suggested caption; it does not caption
+        anything. A model reading an image can be wrong about a jobsite, and
+        the caption a client reads is a statement Ashrah is making — so it
+        stays a human-reviewed step through `caption_media`.
+        """
+        record = self.ws.comms.get_media_asset(media_id)
+        if record is None:
+            return {"error": f"no media asset with id {media_id}"}
+        if not self.ws.openai.live:
+            return {
+                "error": "OPENAI_API_KEY is not set, so the image cannot be read",
+                "guidance": "Caption it from what the field employee reported, not from assumption.",
+            }
+
+        result = self.ws.openai.describe_image(
+            str(record.get("uri", "")), model=self.ws.settings.vision_model
+        )
+        if "error" in result:
+            return result
+        description = str(result.get("description", "")).strip()
+        self.ws.comms.update_media(media_id, {"vision_description": description})
+
+        lowered = description.lower()
+        concerns = [
+            flag for flag, words in (
+                ("personal_information", ("face", "person", "people", "worker", "document", "screen", "monitor")),
+                ("security", ("keypad", "alarm", "camera", "lock", "key", "access panel")),
+                ("unsafe_conduct", ("no harness", "without ppe", "unsafe", "no hard hat", "no guardrail")),
+            ) if any(w in lowered for w in words)
+        ]
+        return {
+            "media_id": media_id,
+            "description": description,
+            "possible_flags": concerns,
+            "guidance": (
+                "This describes the image; it does not caption it. Write the caption yourself "
+                "with caption_media, from this plus what the field reported — and never claim "
+                "completion from an image."
+            ),
+        }
+
     def _project_submissions(self, project_id: str, work_date: str = "") -> dict[str, Any]:
         submissions = self.ws.comms.submissions_for(project_id, work_date=work_date or "")
         return {
@@ -1131,6 +1235,30 @@ class CommunicationTools:
                 ["submission_id", "normalized_summary"],
             ),
             self._process_field_submission,
+        )
+        r(
+            "transcribe_field_submission",
+            "Transcribe a voice note into text, verbatim, in whatever language it was spoken. "
+            "Call this before translating a voice submission. It fills an empty transcript "
+            "once and never rewrites one — if transcription is unavailable, ask the employee "
+            "to send text rather than writing what you expect the recording to say.",
+            obj(
+                {
+                    "submission_id": string("The fsub_... id"),
+                    "audio_uri": string("Where the recording is, if not already on the submission"),
+                    "language": string("Language hint, e.g. ar, ku, fr — improves accuracy"),
+                },
+                ["submission_id"],
+            ),
+            self._transcribe_submission,
+        )
+        r(
+            "describe_media",
+            "Read a submitted photo and report what is visibly in it, plus anything that may "
+            "need flagging. This describes the image; it does not caption it — write the "
+            "caption yourself with caption_media, and never claim completion from a photo.",
+            obj({"media_id": string("The med_... id")}, ["media_id"]),
+            self._describe_media,
         )
         r(
             "verify_field_submission",

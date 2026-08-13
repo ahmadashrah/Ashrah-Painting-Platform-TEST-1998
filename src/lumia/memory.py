@@ -11,12 +11,21 @@ Two jobs:
 
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any
 
 from .domain.accounts import ARERecord, Confidence, new_id, today_iso
+from .integrations.openai import cosine
 from .store import LocalStore
+
+log = logging.getLogger(__name__)
+
+#: Below this similarity a lesson is not really about the question asked.
+#: Set deliberately low: a near-miss lesson shown and judged irrelevant costs
+#: a glance, while a relevant one withheld costs a repeated mistake.
+SIMILARITY_FLOOR = 0.25
 
 
 @dataclass
@@ -75,8 +84,37 @@ class ImprovementProposal:
 
 
 class Memory:
-    def __init__(self, store: LocalStore) -> None:
+    """The ARE ledger and the lessons, with recall on top.
+
+    Recall has two modes. With an embedder configured, a lesson is matched
+    by meaning — "the GC stopped replying after long emails" surfaces for
+    "how should I write to Northgate" without sharing a word. Without one,
+    it falls back to keyword overlap, which is weaker but needs no
+    credentials and never silently disappears.
+
+    The fallback matters more than the upgrade: a memory that returns
+    nothing when an API key is missing would quietly stop influencing
+    decisions, and nobody would notice.
+    """
+
+    def __init__(self, store: LocalStore, embedder: Any = None, model: str = "") -> None:
         self.store = store
+        self.embedder = embedder
+        self.model = model
+
+    @property
+    def semantic(self) -> bool:
+        return bool(self.embedder is not None and getattr(self.embedder, "live", False))
+
+    def _embed(self, texts: list[str]) -> list[list[float]]:
+        if not self.semantic or not texts:
+            return []
+        try:
+            result = self.embedder.embed(texts, model=self.model) if self.model else self.embedder.embed(texts)
+        except Exception as exc:  # embedding is an optimization, never a hard dependency
+            log.warning("embedding failed, falling back to keyword recall: %s", exc)
+            return []
+        return list(result.get("vectors") or [])
 
     # --- ARE ledger ----------------------------------------------------
 
@@ -136,8 +174,12 @@ class Memory:
                 return merged
 
         data = lesson.to_dict()
+        vectors = self._embed([_lesson_text(data)])
+        if vectors:
+            data["embedding"] = vectors[0]
         self.store.put("lessons", lesson.id, data)
-        return data
+        # The stored vector is an implementation detail; callers get the lesson.
+        return {k: v for k, v in data.items() if k != "embedding"}
 
     def recall(
         self,
@@ -149,6 +191,11 @@ class Memory:
     ) -> list[dict[str, Any]]:
         """Retrieve the lessons most relevant to a decision about to be made."""
         candidates = self.store.list("lessons")
+
+        if query and self.semantic:
+            ranked = self._recall_by_meaning(query, candidates, segment=segment, channel=channel)
+            if ranked is not None:
+                return ranked[:limit]
 
         def relevance(lesson: dict[str, Any]) -> tuple[int, int, int]:
             score = 0
@@ -168,7 +215,61 @@ class Memory:
         # Drop anything with no relevance at all when a query was supplied.
         if query or segment or channel:
             ranked = [lesson for lesson in ranked if relevance(lesson)[0] > 0] or ranked[:limit]
-        return ranked[:limit]
+        return [_without_vector(lesson) for lesson in ranked[:limit]]
+
+    def _recall_by_meaning(
+        self,
+        query: str,
+        candidates: list[dict[str, Any]],
+        *,
+        segment: str = "",
+        channel: str = "",
+    ) -> list[dict[str, Any]] | None:
+        """Rank by similarity. Returns None to fall back on keyword matching.
+
+        Lessons stored before an embedder was configured have no vector, so
+        they are embedded on demand and written back rather than being
+        excluded — otherwise turning embeddings on would make the oldest and
+        best-evidenced lessons invisible.
+        """
+        query_vectors = self._embed([query])
+        if not query_vectors:
+            return None
+        query_vector = query_vectors[0]
+
+        missing = [c for c in candidates if not c.get("embedding")]
+        if missing:
+            filled = self._embed([_lesson_text(c) for c in missing])
+            for lesson, vector in zip(missing, filled):
+                lesson["embedding"] = vector
+                self.store.put("lessons", lesson["id"], lesson)
+
+        scored = []
+        for lesson in candidates:
+            vector = lesson.get("embedding")
+            if not vector:
+                continue
+            score = cosine(query_vector, vector)
+            # Filters are still filters: a matching segment or channel lifts a
+            # lesson, it does not let an unrelated one through.
+            if segment and lesson.get("segment") == segment:
+                score += 0.15
+            if channel and lesson.get("channel") == channel:
+                score += 0.1
+            if score >= SIMILARITY_FLOOR:
+                scored.append((score, lesson))
+
+        if not scored:
+            return None
+        strength = {"high": 3, "medium": 2, "low": 1}
+        scored.sort(
+            key=lambda pair: (round(pair[0], 3), strength.get(str(pair[1].get("strength", "low")), 1)),
+            reverse=True,
+        )
+        return [
+            {**_without_vector(lesson), "similarity": round(score, 3), "matched_by": "meaning"}
+            for score, lesson in scored
+        ]
 
     # --- improvement proposals -----------------------------------------
 
@@ -180,6 +281,18 @@ class Memory:
     def proposals(self, status: str = "") -> list[dict[str, Any]]:
         records = self.store.list("proposals")
         return [p for p in records if p.get("status") == status] if status else records
+
+
+def _lesson_text(lesson: dict[str, Any]) -> str:
+    """What a lesson is *about*, for embedding purposes."""
+    return " ".join(
+        str(lesson.get(key, ""))
+        for key in ("observation", "hypothesis", "recommended_use", "segment", "channel")
+    ).strip()
+
+
+def _without_vector(lesson: dict[str, Any]) -> dict[str, Any]:
+    return {k: v for k, v in lesson.items() if k != "embedding"}
 
 
 def _similar(a: str, b: str) -> bool:

@@ -20,7 +20,7 @@ from typing import Any
 
 from ..agent import Agent, AgentRun
 from ..agents import COMMS_ROLES, build_agent
-from ..llm import ClaudeClient
+from ..llm import ClaudeClient, build_client
 from ..tools import Toolbox
 from ..workspace import Workspace
 from ..domain.projects import today_iso
@@ -64,7 +64,7 @@ class CommunicationDesk:
         return cls(
             workspace=workspace,
             toolbox=Toolbox(workspace),
-            client=client or ClaudeClient(workspace.settings),
+            client=client or build_client(workspace.settings),
         )
 
     def agent(self, role: str) -> Agent:

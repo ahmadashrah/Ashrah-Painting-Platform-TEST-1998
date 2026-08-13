@@ -13,7 +13,7 @@ from typing import Any
 
 from .agent import Agent, AgentRun
 from .agents import ROLES, build_agent
-from .llm import ClaudeClient
+from .llm import ClaudeClient, build_client
 from .reporting import growth_review
 from .tools import Toolbox
 from .workspace import Workspace
@@ -50,7 +50,7 @@ class Orchestrator:
         return cls(
             workspace=workspace,
             toolbox=Toolbox(workspace),
-            client=client or ClaudeClient(workspace.settings),
+            client=client or build_client(workspace.settings),
         )
 
     def agent(self, role: str) -> Agent:

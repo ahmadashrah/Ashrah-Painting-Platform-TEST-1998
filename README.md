@@ -13,9 +13,10 @@ Lumia has two halves that share one harness:
   accurate, professional communication to clients, general contractors,
   crews and suppliers, with a record behind every message.
 
-Both run on Claude Opus 5 with a harness that enforces the parts you cannot
-leave to a prompt: autonomy levels, an approval gate, deterministic scoring
-and screening, and a memory that accumulates evidence.
+Both run on Claude Opus 5 — or on GPT, by changing one variable — with a
+harness that enforces the parts you cannot leave to a prompt: autonomy
+levels, an approval gate, deterministic scoring and screening, and a memory
+that accumulates evidence.
 
 ```bash
 git clone https://github.com/ahmadashrah/ashrah-painting-platform-test-1998.git
@@ -37,6 +38,50 @@ Everything runs without a single third-party credential. Unconfigured
 integrations return simulated data that is **explicitly flagged**, and
 Lumia is instructed to report those as UNKNOWN rather than as findings —
 so a demo can never be mistaken for a real market read.
+
+---
+
+## OpenAI, where it is the better tool
+
+Three uses, none of which replaces the harness around them.
+
+**Whisper transcribes what the field actually sends.** Crews report by voice
+in Arabic, Kurdish and French. `transcribe_field_submission` fills an empty
+transcript once and never rewrites one — a recording says what it says, and
+the chain from audio to sent message has to stay intact. Without the key it
+*refuses*, and tells the agent to ask for text rather than writing a
+transcript from what it expects the recording to say.
+
+**Vision reads a photo; it does not caption one.** `describe_media` reports
+what is visible and flags likely problems — faces, documents, keypads, missing
+PPE — then stops. The caption a client reads is a statement Ashrah is making,
+so it stays a reviewed step through `caption_media`, which still refuses any
+completion claim.
+
+**Embeddings give memory recall by meaning.** "Site radio silence from the
+contractor" now surfaces the lesson about a GC who stopped replying to long
+emails, which shares no keyword with it. Lessons stored before embeddings were
+switched on are backfilled on first use, so enabling this cannot make the
+oldest and best-evidenced lessons invisible. With no key it falls back to
+keyword overlap — a memory that went silent when a key was missing is a
+memory nobody would notice losing.
+
+**The agents can also run on GPT.** Set `ASHRAH_MODEL` to a GPT model and
+they do; the provider follows the model name, so there is no second switch to
+forget.
+
+```bash
+ASHRAH_MODEL=gpt-4o python -m lumia.cli comms intake
+```
+
+Translation happens at the client boundary — `OpenAIClient` accepts the same
+call `ClaudeClient` does and returns the same block shape, converting tool
+calls and results in both directions. The loop, the autonomy gate, the
+approval queue and the content screen are then byte-identical on either
+provider, which is the point: the safety machinery must not have two
+implementations, one of which is less tested. A test drives a GPT-shaped
+response through the real loop and asserts a priced daily log still lands in
+the approval queue.
 
 ---
 
@@ -358,7 +403,7 @@ fails if you forget.
 ## Development
 
 ```bash
-python -m pytest -q          # 139 tests, no network, no API key needed
+python -m pytest -q          # 240 tests, no network, no API key needed
 ```
 
 The suite drives the agent loop with a scripted fake client, so both gates,
@@ -388,6 +433,7 @@ gate queue. Point `ASHRAH_DATA_DIR` elsewhere to isolate environments.
 | `ASHRAH_EFFORT` | `low`–`max`, defaults to `high` |
 | `COMPANY_EMAIL` | outbound email is refused without it |
 | `CRM_API_KEY` | blank uses the built-in local store |
+| `OPENAI_API_KEY` | Whisper transcription, photo vision, embeddings; also needed if `ASHRAH_MODEL` is a GPT model |
 | `SENDGRID_API_KEY` | outreach and project email |
 | `TWILIO_*` | site coordination by text — all three vars required |
 | `SEARCH_API_KEY` | market research |
