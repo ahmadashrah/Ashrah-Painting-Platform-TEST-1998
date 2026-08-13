@@ -44,7 +44,7 @@ from .agent import MAX_ITERATIONS, AgentRun
 from .agents import ROLE_TOOLS, build_agent
 from .agents import COMMS_ROLES
 from .config import SETTINGS, Settings
-from .contract import ContractBreach, EgressGuard
+from .contract import ContractBreach, EgressGuard, current_contract
 from .deadline import Deadline, budget_for
 from .domain.projects import new_id
 from .llm import build_client
@@ -53,6 +53,7 @@ from .observability import (
     RUN_KILLED, RUN_STARTED,
     JsonlRecorder, KillSwitch, RunObserver,
 )
+from .fleet import Fleet, PAUSE, RuntimeEntry, TERMINATE, node_name
 from .phases import Phase, plan_for
 from .tools import Toolbox
 from .workspace import Workspace
@@ -122,6 +123,10 @@ class RunCounter:
 #: interrupted outright. The gap exists so the cooperative stop — which
 #: exits cleanly and reports what happened — normally wins the race.
 WATCHDOG_GRACE_SECONDS = 15.0
+
+#: How long a run waits for its cohort before going on alone. A barrier that
+#: cannot time out turns one wedged runtime into a stalled fleet.
+BARRIER_TIMEOUT_SECONDS = 60.0
 
 
 class HardTimeout(RuntimeError):
@@ -206,6 +211,10 @@ class RunRecord:
     killed: bool = False
     #: One entry per phase: what it was for, what it used, how it ended.
     phases: list[dict[str, Any]] = field(default_factory=list)
+    #: Where this ran and under which fleet-wide contract.
+    node: str = ""
+    contract_version: str = ""
+    cohort: str = ""
     #: Set when the run tried to act outside its contract and was stopped.
     breached: bool = False
     breach: dict[str, Any] = field(default_factory=dict)
@@ -267,6 +276,10 @@ class Runner:
     def kill_switch(self) -> KillSwitch:
         return KillSwitch(self.root / "kill")
 
+    @property
+    def fleet(self) -> Fleet:
+        return Fleet(self.root)
+
     def recorder(self) -> JsonlRecorder:
         """The step log every run writes to, attached once per Runner."""
         recorder = JsonlRecorder(self.root / "events.jsonl")
@@ -300,6 +313,7 @@ class Runner:
         task: str,
         max_iterations: int = MAX_ITERATIONS,
         budget_seconds: float | None = None,
+        cohort: str = "",
     ) -> RunRecord:
         """Run one agent on one task, from a cold start, under its own number."""
         if role not in ROLE_TOOLS:
@@ -317,9 +331,13 @@ class Runner:
             budget_seconds=budget,
             label="communication" if role in COMMS_ROLES else "growth work",
         )
+        fleet = self.fleet
+        contract = current_contract(self.settings)
+        drift = fleet.contracts.verify(contract)
         record = RunRecord(
             role=role, task=task, number=number, reference=reference_for(number),
-            budget_seconds=budget,
+            budget_seconds=budget, node=node_name(),
+            contract_version=str(drift.get("version", "")), cohort=cohort,
         )
 
         # Everything this run writes is stamped with the reference — see
@@ -340,7 +358,34 @@ class Runner:
         agent = build_agent(role, workspace, toolbox, self.client_factory(self.settings))
         workspace.store.put("runs", record.id, record.to_dict())
         started = datetime.now()
-        observer.emit(RUN_STARTED, task=task, budget_seconds=budget, number=number)
+        entry = RuntimeEntry(
+            run=record.reference, role=role, node=record.node, task=task[:120],
+            contract_version=record.contract_version,
+        )
+        registered = entry.to_dict()
+        registered["cohort"] = cohort
+        fleet.registry.register(entry)
+        fleet.registry.update(record.reference, cohort=cohort)
+
+        observer.emit(RUN_STARTED, task=task, budget_seconds=budget, number=number,
+                      node=record.node, contract=record.contract_version,
+                      contract_status=drift.get("status"))
+
+        if drift.get("status") == "drift":
+            # A node enforcing different rules from its peers is the exact
+            # case contract distribution exists to catch. It does not run.
+            fleet.registry.deregister(record.reference)
+            record.status = "failed"
+            record.breached = True
+            record.stopped_because = "contract_drift"
+            record.error = str(drift.get("detail", ""))
+            record.reply = str(drift.get("detail", ""))
+            record.finished_at = _timestamp()
+            workspace.store.put("runs", record.id, record.to_dict())
+            observer.emit(CONTRACT_BREACHED, breach="contract_drift",
+                          attempted=record.contract_version, detail=record.error)
+            log.error("run %s refused: %s", record.reference, record.error)
+            return record
 
         try:
             watchdog_after = (
@@ -405,6 +450,7 @@ class Runner:
         record.duration_seconds = round((datetime.now() - started).total_seconds(), 2)
         workspace.store.put("runs", record.id, record.to_dict())
         switch.clear(record.reference)
+        fleet.registry.deregister(record.reference)
         # The closing event has to match the outcome. A breached or killed run
         # logged as "run.finished" reads as a clean run to anyone scanning the
         # step log, which is the failure this whole area exists to prevent.
@@ -483,10 +529,28 @@ class Runner:
                 )
                 break
 
+            fleet = self.fleet
+            fleet.registry.update(record.reference, phase=phase.name)
+
+            # Coordinated phase transitions: with a cohort set, nothing starts
+            # a phase until every peer has reached it. One agent sending a log
+            # while another is still processing the report it depends on
+            # produces a client message the record contradicts a minute later.
+            waited: dict[str, Any] = {}
+            if record.cohort:
+                barrier = fleet.barrier([p.name for p in phases])
+                waited = barrier.wait(record.cohort, phase.name, exclude=record.reference,
+                                      timeout=BARRIER_TIMEOUT_SECONDS)
+                if not waited.get("ready"):
+                    log.warning("%s advanced to %s without the fleet: %s",
+                                record.reference, phase.name, waited.get("waiting_on"))
+
             observer.emit(
                 PHASE_STARTED, phase=phase.name, index=index, of=len(phases),
                 goal=phase.goal, tools=", ".join(phase.tools),
                 remaining_seconds=deadline.remaining,
+                cohort=record.cohort, waited_for_fleet=waited.get("waited_seconds"),
+                advanced_without=len(waited.get("waiting_on", []) or []),
             )
 
             agent.allowed_tools = phase.tools

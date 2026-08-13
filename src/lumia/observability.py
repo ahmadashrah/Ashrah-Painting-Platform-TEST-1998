@@ -56,6 +56,8 @@ BUDGET_WARNING = "budget.warning"
 RUN_FINISHED = "run.finished"
 RUN_FAILED = "run.failed"
 RUN_KILLED = "run.killed"
+RUN_PAUSED = "run.paused"
+RUN_RESUMED = "run.resumed"
 CONTRACT_BREACHED = "contract.breached"
 
 #: Warn the operator once a run has spent this much of its budget, so a
@@ -274,7 +276,12 @@ class KillSwitch:
         return {"killing": reference, "reason": reason, "note": "the run stops at its next step"}
 
     def requested(self, reference: str) -> dict[str, Any] | None:
-        """Whether this run — or everything — has been asked to stop."""
+        """Whether this run — or everything — has been asked to stop.
+
+        Shares its directory with the fleet's lifecycle bus, so a `pause`
+        broadcast lands here too. A pause is not a stop: it is reported
+        separately and the loop holds rather than ending.
+        """
         for candidate in (reference, self.ALL):
             path = self._path(candidate)
             if path.is_file():
@@ -282,7 +289,22 @@ class KillSwitch:
                     payload = json.loads(path.read_text(encoding="utf-8"))
                 except (OSError, ValueError):
                     payload = {}
+                if str(payload.get("command", "")) == "pause":
+                    continue          # handled by `paused`, not by stopping
                 return {"scope": candidate, **payload}
+        return None
+
+    def paused(self, reference: str) -> dict[str, Any] | None:
+        """Whether this run is being held rather than stopped."""
+        for candidate in (reference, self.ALL):
+            path = self._path(candidate)
+            if path.is_file():
+                try:
+                    payload = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    payload = {}
+                if str(payload.get("command", "")) == "pause":
+                    return {"scope": candidate, **payload}
         return None
 
     def clear(self, reference: str) -> None:

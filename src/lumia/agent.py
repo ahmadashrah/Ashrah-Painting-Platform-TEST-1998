@@ -18,7 +18,8 @@ from .contract import KILL, OUT_OF_PHASE, UNKNOWN_TOOL, Breach, ContractBreach, 
 from .deadline import Deadline
 from .observability import (
     GATE_DECIDED, MODEL_REPLIED, RUN_KILLED, TOOL_EXECUTED, TOOL_GATED,
-    TOOL_PROPOSED, TOOL_REFUSED, TURN_STARTED, Killed, RunObserver,
+    RUN_PAUSED, RUN_RESUMED, TOOL_PROPOSED, TOOL_REFUSED, TURN_STARTED,
+    Killed, RunObserver,
 )
 from .llm import ClaudeClient, build_client, text_of, tool_uses
 from .prompts import system_prompt
@@ -29,6 +30,9 @@ log = logging.getLogger(__name__)
 
 MAX_ITERATIONS = 12
 MAX_PAUSE_RESUMES = 3
+
+#: How often a held run checks whether the pause has lifted.
+PAUSE_POLL_SECONDS = 0.25
 
 
 @dataclass
@@ -115,6 +119,8 @@ class Agent:
             if stop is not None:
                 return self._killed(run, stop, "starting another turn")
 
+            self._hold_while_paused()
+
             if deadline is not None and not deadline.usable:
                 return self._out_of_time(run, deadline, "starting another turn")
 
@@ -182,6 +188,36 @@ class Agent:
         if switch is None or not self.ws.run_ref:
             return None
         return switch.requested(self.ws.run_ref)
+
+    def _hold_while_paused(self) -> None:
+        """Wait out a fleet pause, checking for a terminate while held.
+
+        A paused run keeps its place — its registry entry, its number, its
+        phase — so resuming continues rather than restarting. It stays
+        killable throughout: an operator who pauses, looks, and decides to
+        stop must not have to resume first.
+        """
+        import time as _time
+
+        switch = getattr(self, "kill_switch", None)
+        if switch is None or not hasattr(switch, "paused") or not self.ws.run_ref:
+            return
+        held = switch.paused(self.ws.run_ref)
+        if held is None:
+            return
+
+        observer = getattr(self, "observer", None)
+        if observer is not None:
+            observer.emit(RUN_PAUSED, reason=str(held.get("reason") or ""), scope=held.get("scope"))
+        log.info("run %s paused by operator", self.ws.run_ref)
+
+        while switch.paused(self.ws.run_ref) is not None:
+            if switch.requested(self.ws.run_ref) is not None:
+                break                      # terminate wins over a hold
+            _time.sleep(PAUSE_POLL_SECONDS)
+
+        if observer is not None:
+            observer.emit(RUN_RESUMED)
 
     def _killed(self, run: AgentRun, stop: dict[str, Any], before: str) -> AgentRun:
         """Stop because an operator said so, and say what had already happened."""

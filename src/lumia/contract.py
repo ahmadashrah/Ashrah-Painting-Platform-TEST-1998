@@ -165,3 +165,31 @@ def _host_of(url: str) -> str:
         return (urlparse(url).hostname or "").lower()
     except ValueError:
         return ""
+
+
+# --- the contract this runtime is enforcing ------------------------------------
+
+
+def current_contract(settings: Any, contract_id: str = "lumia") -> Any:
+    """Build the contract from the rules this process actually enforces.
+
+    Derived from the live tables rather than written down beside them. A
+    contract maintained by hand drifts from the code it describes, and a
+    fleet comparing hand-maintained descriptions would agree precisely when
+    it should not.
+    """
+    from .autonomy import AUTO_SENDABLE_KINDS, TOOL_LEVELS
+    from .fleet import ExecutionContract
+    from .phases import PLANS
+
+    return ExecutionContract(
+        contract_id=contract_id,
+        tool_levels={name: int(level) for name, level in sorted(TOOL_LEVELS.items())},
+        auto_sendable_kinds=sorted(AUTO_SENDABLE_KINDS),
+        phase_plans={
+            role: [{"name": p.name, "tools": sorted(p.tools)} for p in phases]
+            for role, phases in sorted(PLANS.items())
+        },
+        allowed_hosts=sorted(EgressGuard.from_settings(settings).hosts),
+        on_breach=policy(),
+    )

@@ -90,6 +90,16 @@ def main(argv: list[str] | None = None) -> int:
     watch_cmd.add_argument("--replay", type=int, default=20, help="steps of history to show first")
     watch_cmd.add_argument("--once", action="store_true", help="print what has happened and exit")
 
+    fleet_cmd = sub.add_parser("fleet", help="what is running across every runtime")
+    fleet_actions = fleet_cmd.add_subparsers(dest="fleet_command", required=True)
+    fleet_actions.add_parser("status", help="active runs, nodes, phases, outstanding commands")
+    fleet_actions.add_parser("sweep", help="drop entries whose runtime died")
+    fleet_actions.add_parser("contract", help="this node's contract, and whether it matches the fleet")
+    fleet_actions.add_parser("publish", help="publish this node's contract as the fleet's")
+    hold = fleet_actions.add_parser("pause", help="hold every run at its next step")
+    hold.add_argument("--reason", default="operator hold")
+    fleet_actions.add_parser("resume", help="release a fleet-wide pause")
+
     kill_cmd = sub.add_parser("kill", help="stop a run that is already going")
     kill_cmd.add_argument("reference", help="a run reference, or ALL to stop everything")
     kill_cmd.add_argument("--reason", default="", help="why — recorded and shown in the run's reply")
@@ -133,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
         _print(Lumia(settings=ws.settings).status())
         return 0
 
-    if args.command in {"agents", "screen", "gate", "runs", "watch", "kill", "steps"}:
+    if args.command in {"agents", "screen", "gate", "runs", "watch", "kill", "steps", "fleet"}:
         return _facade(ws, args)
 
     if args.command == "seed":
@@ -189,6 +199,34 @@ def _facade(ws: Workspace, args: argparse.Namespace) -> int:
                   f"L3 {len(agent.approval_required)} need a human")
             if agent.approval_required:
                 print(f"  needs approval: {', '.join(agent.approval_required)}")
+        return 0
+
+    if args.command == "fleet":
+        from .contract import current_contract
+        from .fleet import ALL, PAUSE, RESUME
+
+        fleet = lumia.runner.fleet
+        if args.fleet_command == "status":
+            _print(fleet.status())
+        elif args.fleet_command == "sweep":
+            dropped = fleet.registry.sweep()
+            print(f"Dropped {len(dropped)} stale entr{'y' if len(dropped) == 1 else 'ies'}."
+                  + (f" {', '.join(dropped)}" if dropped else ""))
+        elif args.fleet_command == "contract":
+            contract = current_contract(lumia.settings)
+            _print({**fleet.contracts.verify(contract),
+                    "tools": len(contract.tool_levels),
+                    "roles_with_phases": len(contract.phase_plans),
+                    "allowed_hosts": contract.allowed_hosts,
+                    "on_breach": contract.on_breach})
+        elif args.fleet_command == "publish":
+            published = fleet.contracts.publish(current_contract(lumia.settings))
+            print(f"Published contract {published['contract_id']}@{published['version']}. "
+                  "Runtimes enforcing different rules will now refuse to run.")
+        elif args.fleet_command == "pause":
+            _print(fleet.lifecycle.broadcast(PAUSE, ALL, reason=args.reason))
+        elif args.fleet_command == "resume":
+            _print(fleet.lifecycle.broadcast(RESUME, ALL))
         return 0
 
     if args.command == "kill":

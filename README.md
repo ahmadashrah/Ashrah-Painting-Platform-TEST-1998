@@ -188,6 +188,72 @@ never as a clean finish.
 
 ---
 
+## L5: many runtimes, one fabric
+
+One runtime enforcing its own contract is enough while everything runs in
+one process. It stops being enough the moment there is a scheduler running
+the daily-log cycle, an operator running intake from a laptop, and the web
+console serving a phone — three runtimes, no shared view, no way to stop
+them together.
+
+```bash
+python -m lumia.cli fleet status      # what is running, where, in which phase
+python -m lumia.cli fleet contract    # do this node's rules match the fleet's
+python -m lumia.cli fleet publish     # make this node's rules the fleet's
+python -m lumia.cli fleet pause       # hold every run at its next step
+python -m lumia.cli fleet resume
+python -m lumia.cli fleet sweep       # drop entries whose runtime died
+```
+
+**1. Shared runtime registry.** Every active run, with its node, its role
+and the phase it is in right now. Entries are written per-run rather than
+into one index, so two runtimes starting at once never contend and a
+crashed process leaves one stale entry rather than a corrupt file. Entries
+go stale after 90 seconds — a dead runtime stops blocking the fleet instead
+of holding it forever.
+
+**2. Distributed lifecycle commands.** `terminate` was already there as the
+kill switch. `pause` and `resume` join it: a paused run *holds* — keeping
+its number, its registry entry and its phase — and continues where it left
+off. It stays killable while held, because an operator who pauses, looks,
+and decides to stop should not have to resume first.
+
+**3. Consistent contract distribution.** The contract — every tool's level,
+the auto-sendable kinds, every phase plan, the allowed hosts, the breach
+policy — is built *from the live tables*, not written down beside them, and
+versioned by a fingerprint of the rules themselves:
+
+```
+Published contract lumia@9271823efe7a.
+Runtimes enforcing different rules will now refuse to run.
+```
+
+Because the version is derived, two nodes agreeing on it means their rules
+genuinely match. A node on a stale deploy produces a different fingerprint
+and **refuses to start**, which is the entire reason to distribute a
+contract rather than assume one.
+
+**4. Cross-runtime containment.** Runtimes may not call each other by
+default. An agent that can ask a peer on another host to act for it has no
+containment at all. Nodes coordinate through the shared registry and bus;
+`LUMIA_APPROVED_RUNTIMES` opens a route deliberately.
+
+**5. Coordinated phase transitions.** Give runs a cohort and no one starts a
+phase until every peer has reached it — nothing sends while another agent is
+still gathering the report it depends on. The barrier always times out
+rather than stalling: one wedged runtime must not stop everyone, so a run
+proceeds alone and records who it left behind.
+
+**What backs this.** The shared data directory with file locks — the same
+substrate the run counter uses. That genuinely coordinates every process on
+one host, which is this deployment. It is not multi-region, and the module
+says so: the registry, bus and contract store are narrow interfaces over a
+path, so real multi-host work means swapping the storage inside those three
+classes and nothing above them. A fleet that reported consistency it did not
+have would be worse than one that admits it is a single host.
+
+---
+
 ## The operator's window
 
 Every step a run takes is an event, and an operator can watch them live or
@@ -771,7 +837,7 @@ fails if you forget.
 ## Development
 
 ```bash
-python -m pytest -q          # 316 tests, no network, no API key needed
+python -m pytest -q          # 337 tests, no network, no API key needed
 ```
 
 The suite drives the agent loop with a scripted fake client, so both gates,
