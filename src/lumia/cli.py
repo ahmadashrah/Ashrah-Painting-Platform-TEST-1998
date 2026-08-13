@@ -34,6 +34,7 @@ from .agents import COMMS_ROLES, GROWTH_ROLES
 from .comms.desk import CommunicationDesk
 from .comms.reporting import communication_review
 from .comms.seed import seed_demo_projects
+from .facade import Lumia
 from .llm import MissingAPIKey
 from .orchestrator import Orchestrator
 from .reporting import growth_review
@@ -65,6 +66,20 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("seed", help="load demo accounts so the pipeline is explorable")
     sub.add_parser("pipeline", help="print the pipeline rollup")
 
+    agents_cmd = sub.add_parser("agents", help="every agent, what it does and what it may do")
+    agents_cmd.add_argument("--family", choices=["growth", "communication"], default="")
+    agents_cmd.add_argument("--role", default="", help="show one role's tools in detail")
+
+    screen_cmd = sub.add_parser("screen", help="check wording against the approval screen")
+    screen_cmd.add_argument("text", help="the message text")
+    screen_cmd.add_argument("--to", dest="recipient_role", default="client", help="recipient role")
+    screen_cmd.add_argument("--subject", default="")
+
+    gate_cmd = sub.add_parser("gate", help="dry-run the autonomy gate for one tool call")
+    gate_cmd.add_argument("tool", help="tool name")
+    gate_cmd.add_argument("--arg", action="append", default=[], metavar="KEY=VALUE",
+                          help="tool argument, repeatable")
+
     run_cmd = sub.add_parser("run", help="give Lumia a task")
     run_cmd.add_argument("task", help="what you want done")
     run_cmd.add_argument("--role", choices=GROWTH_ROLES, help="force a specialist instead of auto-routing")
@@ -91,8 +106,11 @@ def main(argv: list[str] | None = None) -> int:
         return _comms(ws, args)
 
     if args.command == "status":
-        _print(ws.status())
+        _print(Lumia(settings=ws.settings).status())
         return 0
+
+    if args.command in {"agents", "screen", "gate"}:
+        return _facade(ws, args)
 
     if args.command == "seed":
         _print(seed_demo_data(ws))
@@ -123,6 +141,40 @@ def main(argv: list[str] | None = None) -> int:
 
     _report_run(run)
     return 0
+
+
+def _facade(ws: Workspace, args: argparse.Namespace) -> int:
+    """Introspection and dry-runs — none of these need an API key."""
+    lumia = Lumia(settings=ws.settings)
+
+    if args.command == "agents":
+        if args.role:
+            _print(lumia.tools(args.role))
+            return 0
+        for agent in lumia.agents(family=args.family):
+            print(f"\n{agent.role}  [{agent.family}]")
+            print(f"  {agent.purpose}")
+            print(f"  {len(agent.tools)} tools — "
+                  f"L1 {len(agent.autonomous)} free, "
+                  f"L2 {len(agent.controlled)} within rules, "
+                  f"L3 {len(agent.approval_required)} need a human")
+            if agent.approval_required:
+                print(f"  needs approval: {', '.join(agent.approval_required)}")
+        return 0
+
+    if args.command == "screen":
+        result = lumia.screen(args.text, recipient_role=args.recipient_role, subject=args.subject)
+        _print(result)
+        return 1 if result["requires_approval"] else 0
+
+    # gate
+    arguments: dict[str, Any] = {}
+    for pair in args.arg:
+        key, _, value = pair.partition("=")
+        arguments[key.strip()] = value.strip()
+    decision = lumia.gate(args.tool, **arguments)
+    _print(decision)
+    return 1 if decision["level"] == 3 else 0
 
 
 def _add_comms_commands(sub: Any) -> None:
