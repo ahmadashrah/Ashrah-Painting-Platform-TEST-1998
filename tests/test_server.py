@@ -139,8 +139,13 @@ def test_no_route_exposes_project_or_client_data(base_url):
         assert leak not in combined
 
 
-def test_the_api_cannot_send_anything(base_url):
-    """There is no write path: the send tool is not reachable over HTTP."""
+def test_no_route_sends_without_going_through_the_gate(base_url):
+    """Sending has exactly one door, and it is the approval queue.
+
+    There is no general "call this tool" route and no direct send: the only
+    way a message leaves over HTTP is a Level 3 action a human approved with
+    `execute`. Anything that would bypass that must stay a 404.
+    """
     for route in ("/api/send", "/api/call", "/api/projects"):
         with pytest.raises(urllib.error.HTTPError) as excinfo:
             urllib.request.urlopen(
@@ -277,3 +282,156 @@ def test_a_kill_needs_a_target(base_url, monkeypatch):
     with pytest.raises(urllib.error.HTTPError) as excinfo:
         urllib.request.urlopen(request, timeout=5)
     assert excinfo.value.code == 400
+
+
+# --- the approval queue: the gate is a queue with a person at the end -------
+
+
+def _approvals_request(base_url, payload=None, token=None, method="POST"):
+    headers = {"Content-Type": "application/json"}
+    if token is not None:
+        headers["X-Lumia-Token"] = token
+    data = json.dumps(payload).encode() if payload is not None else None
+    return urllib.request.Request(f"{base_url}/api/approvals", data=data,
+                                  headers=headers, method=method)
+
+
+def _queue(monkeypatch, tmp_path, token="correct-horse"):
+    """Point the server at a throwaway workspace and switch control on."""
+    from lumia import server
+
+    monkeypatch.setattr(server, "RUN_TOKEN", token)
+    monkeypatch.setattr(server, "SETTINGS", replace(server.SETTINGS, data_dir=tmp_path))
+    return server.Workspace.build(server.SETTINGS).approvals
+
+
+def _hold(queue, body="The extra work will be $4,200."):
+    from lumia.autonomy import ApprovalRequest
+
+    return queue.submit(ApprovalRequest(
+        tool="send_communication",
+        arguments={"draft_id": "comm_1", "body": body},
+        reason="pricing to a client needs a human",
+        agent="client_comms",
+    ))
+
+
+def test_the_queue_is_not_readable_without_a_token(base_url, monkeypatch):
+    """It holds drafted messages and recipient names — the most sensitive thing here."""
+    from lumia import server
+
+    monkeypatch.setattr(server, "RUN_TOKEN", "")
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        urllib.request.urlopen(_approvals_request(base_url, method="GET"), timeout=5)
+    assert excinfo.value.code == 503
+
+
+def test_a_wrong_token_cannot_read_the_queue(base_url, monkeypatch, tmp_path):
+    _queue(monkeypatch, tmp_path)
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        urllib.request.urlopen(_approvals_request(base_url, token="wrong", method="GET"), timeout=5)
+    assert excinfo.value.code == 403
+
+
+def test_a_held_action_is_visible_to_an_operator(base_url, monkeypatch, tmp_path):
+    queue = _queue(monkeypatch, tmp_path)
+    held = _hold(queue)
+
+    with urllib.request.urlopen(
+        _approvals_request(base_url, token="correct-horse", method="GET"), timeout=5
+    ) as response:
+        payload = json.loads(response.read())
+
+    assert payload["count"] == 1
+    assert payload["pending"][0]["id"] == held.id
+    assert payload["pending"][0]["reason"] == "pricing to a client needs a human"
+
+
+def test_rejecting_records_the_decision_and_sends_nothing(base_url, monkeypatch, tmp_path):
+    queue = _queue(monkeypatch, tmp_path)
+    held = _hold(queue)
+
+    with urllib.request.urlopen(
+        _approvals_request(base_url, {"id": held.id, "decision": "reject", "note": "wrong number"},
+                           token="correct-horse"), timeout=5
+    ) as response:
+        payload = json.loads(response.read())
+
+    assert payload["decision"]["status"] == "rejected"
+    assert payload["decision"]["decision_note"] == "wrong number"
+    assert payload["executed"] is False
+    assert queue.pending() == []
+
+
+def test_approving_without_execute_does_not_send(base_url, monkeypatch, tmp_path):
+    """Approving and sending are separate decisions, and stay separate."""
+    queue = _queue(monkeypatch, tmp_path)
+    held = _hold(queue)
+
+    with urllib.request.urlopen(
+        _approvals_request(base_url, {"id": held.id, "decision": "approve"},
+                           token="correct-horse"), timeout=5
+    ) as response:
+        payload = json.loads(response.read())
+
+    assert payload["decision"]["status"] == "approved"
+    assert payload["executed"] is False
+    assert queue.all()[0]["status"] == "approved"  # not "executed"
+
+
+def test_an_unrecognised_decision_is_refused_rather_than_defaulted(base_url, monkeypatch, tmp_path):
+    """This route can put a message in front of a client. It never guesses."""
+    queue = _queue(monkeypatch, tmp_path)
+    held = _hold(queue)
+
+    for decision in ("", "maybe", "yes", "APPROVED?"):
+        with pytest.raises(urllib.error.HTTPError) as excinfo:
+            urllib.request.urlopen(
+                _approvals_request(base_url, {"id": held.id, "decision": decision},
+                                   token="correct-horse"), timeout=5)
+        assert excinfo.value.code == 400
+    assert queue.pending()[0]["status"] == "pending"
+
+
+def test_deciding_the_same_action_twice_is_refused(base_url, monkeypatch, tmp_path):
+    """Otherwise an approval clicked twice on a flaky connection sends twice."""
+    queue = _queue(monkeypatch, tmp_path)
+    held = _hold(queue)
+    body = {"id": held.id, "decision": "approve"}
+
+    urllib.request.urlopen(_approvals_request(base_url, body, token="correct-horse"), timeout=5)
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        urllib.request.urlopen(_approvals_request(base_url, body, token="correct-horse"), timeout=5)
+    assert excinfo.value.code == 404
+    assert "already approved" in json.loads(excinfo.value.read())["error"]
+
+
+def test_an_unknown_approval_id_is_not_found(base_url, monkeypatch, tmp_path):
+    _queue(monkeypatch, tmp_path)
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        urllib.request.urlopen(
+            _approvals_request(base_url, {"id": "appr_nope", "decision": "approve"},
+                               token="correct-horse"), timeout=5)
+    assert excinfo.value.code == 404
+
+
+# --- status: which keys landed, without ever showing one -------------------
+
+
+def test_status_names_missing_variables_but_never_a_key(base_url, monkeypatch):
+    from lumia import server
+
+    secret = "sk-do-not-leak-this-value"
+    patched = replace(server.SETTINGS)
+    patched.services["email"] = replace(patched.services["email"], api_key=secret)
+    monkeypatch.setattr(server, "SETTINGS", patched)
+
+    status, raw = get(f"{base_url}/api/status")
+    assert status == 200
+    assert secret not in raw.decode()
+
+    payload = json.loads(raw)
+    email = next(s for s in payload["services"] if s["name"] == "email")
+    assert email["live"] is True
+    sms = next(s for s in payload["services"] if s["name"] == "sms")
+    assert "TWILIO_AUTH_TOKEN" in sms["needs"]
