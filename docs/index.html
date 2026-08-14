@@ -1,0 +1,493 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Lumia Control Room</title>
+<style>
+  :root {
+    --ground:#f4f5f3; --surface:#fff; --surface2:#eceee9; --ink:#16191b; --ink2:#5c646a;
+    --line:#d5d9d4; --accent:#1d5fa8; --accent-soft:#e4edf7;
+    --pass:#2c6e49; --pass-soft:#e3f0e8; --hold:#a8420e; --hold-soft:#fbe9e0;
+    --tap:48px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground:#14171a; --surface:#1c2023; --surface2:#252c30; --ink:#e9edea; --ink2:#98a2a6;
+      --line:#2f373b; --accent:#6ba6e8; --accent-soft:#17293b;
+      --pass:#6dc49a; --pass-soft:#1a2f25; --hold:#e8875a; --hold-soft:#3a2319;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground:#14171a; --surface:#1c2023; --surface2:#252c30; --ink:#e9edea; --ink2:#98a2a6;
+    --line:#2f373b; --accent:#6ba6e8; --accent-soft:#17293b;
+    --pass:#6dc49a; --pass-soft:#1a2f25; --hold:#e8875a; --hold-soft:#3a2319;
+  }
+
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    background: var(--ground); color: var(--ink); margin: 0;
+    font: 16px/1.5 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif;
+    padding-bottom: calc(64px + env(safe-area-inset-bottom));
+  }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 0 14px; }
+  code, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .88em; }
+  h1 { font-size: 18px; margin: 0; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .07em; color: var(--ink2); margin: 0 0 10px; }
+  p { margin: 0 0 10px; }
+  .sub { color: var(--ink2); font-size: 14px; }
+
+  header {
+    position: sticky; top: 0; z-index: 20; background: var(--surface);
+    border-bottom: 1px solid var(--line); padding: 12px 0;
+    padding-top: calc(12px + env(safe-area-inset-top));
+  }
+  header .wrap { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ink2); display: inline-block; }
+  .dot.on { background: var(--pass); }
+
+  main { padding-top: 16px; }
+  .panel { display: none; }
+  .panel.on { display: block; }
+
+  .card { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; padding: 14px; margin-bottom: 12px; }
+
+  /* agent list */
+  .agent { width: 100%; text-align: left; background: var(--surface); border: 1px solid var(--line);
+           border-radius: 10px; padding: 13px 14px; margin-bottom: 10px; color: var(--ink);
+           display: flex; gap: 12px; align-items: flex-start; min-height: var(--tap); cursor: pointer; font: inherit; }
+  .agent:active { background: var(--surface2); }
+  .agent .name { font-weight: 600; font-size: 15px; }
+  .agent .why { font-size: 13.5px; color: var(--ink2); margin-top: 2px; }
+  .agent .meta { margin-top: 7px; display: flex; gap: 6px; flex-wrap: wrap; }
+  .fam { font-size: 11px; font-family: ui-monospace, monospace; padding: 2px 7px; border-radius: 20px;
+         border: 1px solid var(--line); background: var(--surface2); color: var(--ink2); white-space: nowrap; }
+  .fam.l3 { background: var(--hold-soft); border-color: var(--hold); color: var(--hold); }
+  .chev { margin-left: auto; color: var(--ink2); font-size: 20px; line-height: 1; }
+
+  /* sheet */
+  .sheet { position: fixed; inset: 0; z-index: 40; display: none; }
+  .sheet.on { display: block; }
+  .scrim { position: absolute; inset: 0; background: rgba(0,0,0,.45); }
+  .sheet-body {
+    position: absolute; left: 0; right: 0; bottom: 0; max-height: 92vh; overflow-y: auto;
+    background: var(--surface); border-radius: 14px 14px 0 0; border-top: 1px solid var(--line);
+    padding: 8px 16px calc(24px + env(safe-area-inset-bottom));
+  }
+  .grab { width: 38px; height: 4px; border-radius: 2px; background: var(--line); margin: 6px auto 12px; }
+  @media (min-width: 700px) {
+    .sheet-body { left: 50%; transform: translateX(-50%); width: 640px; bottom: 24px; border-radius: 14px; border: 1px solid var(--line); }
+  }
+
+  label { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--ink2); margin-bottom: 6px; }
+  textarea, select, input {
+    width: 100%; background: var(--surface); color: var(--ink); border: 1px solid var(--line);
+    border-radius: 8px; padding: 11px 12px; font: inherit; font-size: 16px; /* 16px stops iOS zooming on focus */
+  }
+  textarea { min-height: 108px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 14px; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  button.go, button.ghost {
+    min-height: var(--tap); border-radius: 8px; font: inherit; font-weight: 500; cursor: pointer;
+    padding: 0 16px; border: 1px solid transparent;
+  }
+  button.go { background: var(--accent); color: #fff; width: 100%; }
+  button.ghost { background: var(--surface); color: var(--accent); border-color: var(--line); }
+  button[disabled] { opacity: .5; cursor: not-allowed; }
+  .btnrow { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .btnrow button.ghost { flex: 1 1 auto; }
+
+  /* verdict */
+  .verdict { border-radius: 10px; padding: 14px; border: 1px solid; margin-top: 14px; }
+  .verdict.pass { background: var(--pass-soft); border-color: var(--pass); }
+  .verdict.hold { background: var(--hold-soft); border-color: var(--hold); }
+  .verdict h3 { margin: 0 0 4px; font-size: 17px; }
+  .verdict.pass h3 { color: var(--pass); } .verdict.hold h3 { color: var(--hold); }
+  .lvl { font-family: ui-monospace, monospace; font-size: 12px; color: var(--ink2); }
+  ul.findings { list-style: none; padding: 0; margin: 10px 0 0; }
+  ul.findings li { font-size: 13.5px; border-top: 1px solid var(--line); padding: 8px 0 0; margin-top: 8px; }
+  .cat { font-family: ui-monospace, monospace; font-weight: 600; }
+  mark { background: var(--hold); color: #fff; border-radius: 2px; padding: 0 2px; }
+  pre { background: var(--surface2); border: 1px solid var(--line); border-radius: 8px; padding: 12px;
+        overflow-x: auto; font-size: 12.5px; margin: 0; }
+
+  .levels { display: flex; gap: 8px; margin: 12px 0; }
+  .lv { flex: 1; background: var(--surface2); border: 1px solid var(--line); border-radius: 8px; padding: 9px; text-align: center; }
+  .lv b { display: block; font-size: 19px; font-variant-numeric: tabular-nums; }
+  .lv span { font-size: 11px; color: var(--ink2); }
+
+  .tools { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px; }
+  .tool { font-family: ui-monospace, monospace; font-size: 11.5px; background: var(--surface2);
+          border: 1px solid var(--line); border-radius: 5px; padding: 3px 6px; }
+  .tool.l3 { background: var(--hold-soft); border-color: var(--hold); color: var(--hold); }
+
+  /* tab bar */
+  nav {
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 30; display: flex;
+    background: var(--surface); border-top: 1px solid var(--line);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  nav button {
+    flex: 1; min-height: 60px; background: none; border: 0; color: var(--ink2);
+    font: inherit; font-size: 12px; cursor: pointer; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 3px;
+  }
+  nav button .ic { font-size: 19px; line-height: 1; }
+  nav button[aria-selected="true"] { color: var(--accent); font-weight: 600; }
+
+  .note { background: var(--surface2); border: 1px solid var(--line); border-radius: 8px; padding: 11px 13px; font-size: 13.5px; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--ink2); }
+  .scroll { overflow-x: auto; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap">
+    <h1>Lumia</h1>
+    <span class="sub" id="engine"><span class="dot"></span> checking…</span>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <!-- ========== AGENTS ========== -->
+  <section id="p-agents" class="panel on">
+    <h2>Pick an agent</h2>
+    <p class="sub" style="margin-bottom:14px">Each one runs on its own. Nothing is shared between them, and every run starts cold — no memory of the last one.</p>
+    <div id="agentList"></div>
+  </section>
+
+  <!-- ========== GATE ========== -->
+  <section id="p-check" class="panel">
+    <h2>Check a message</h2>
+    <p class="sub">Write it as you'd send it. This is the same gate the agents pass through.</p>
+    <div class="card" style="margin-top:12px">
+      <div style="margin-bottom:12px">
+        <label for="kind">What kind of message</label>
+        <select id="kind"></select>
+      </div>
+      <div style="margin-bottom:12px">
+        <label for="role">Who it goes to</label>
+        <select id="role"></select>
+      </div>
+      <label for="body">Message</label>
+      <textarea id="body">Work Completed Today
+- Surface preparation completed in the north corridor.
+- Primer applied to corridor walls.
+
+Plan for the Next Working Day
+- First finish coat is planned, subject to site readiness.</textarea>
+      <div class="btnrow">
+        <button class="ghost" id="tryPrice">Add a price</button>
+        <button class="ghost" id="tryDone">Claim it's done</button>
+        <button class="ghost" id="reset">Reset</button>
+      </div>
+    </div>
+    <div id="out"></div>
+  </section>
+
+  <!-- ========== HOW ========== -->
+  <section id="p-how" class="panel">
+    <h2>How it runs</h2>
+
+    <div class="card">
+      <h3 style="margin:0 0 8px;font-size:15px">Every run starts cold</h3>
+      <p class="sub" style="margin-bottom:10px">A run builds its own workspace, its own tools, its own connection and its own conversation, then throws all of it away. Run the same agent twice and it does the work twice, with no idea it already ran.</p>
+      <div class="note">
+        <strong>What is kept:</strong> projects, field reports, what was sent, approvals, escalations. That's the record — it has to survive, or the system couldn't tell a client what it said yesterday.<br><br>
+        <strong>What is discarded:</strong> the conversation, the loaded objects, anything held in memory.
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 8px;font-size:15px">Agents don't touch each other</h3>
+      <p class="sub">Two agents running at once share the same data file, but never the same object in memory. Nothing the intake agent does can reach into what the client agent is holding.</p>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 8px;font-size:15px">Running from a phone</h3>
+      <p class="sub" style="margin-bottom:10px">Off by default. A hosted address is reachable by anyone who has it, and running an agent spends money and can send real messages to real clients.</p>
+      <p class="sub">To turn it on, set <code>LUMIA_RUN_TOKEN</code> and <code>ANTHROPIC_API_KEY</code> in the host's variables. The page will then ask for that token once and remember it on this device.</p>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 8px;font-size:15px">From a terminal</h3>
+      <pre>PYTHONPATH=src python -m lumia.server
+python -m lumia.cli agents
+python -m lumia.cli comms seed
+python -m lumia.cli comms intake</pre>
+    </div>
+
+    <div class="card">
+      <h3 style="margin:0 0 10px;font-size:15px">Three branches, not merged</h3>
+      <div class="scroll">
+        <table>
+          <tr><td class="mono">…ai-agents-github-setup</td><td>Marketing</td><td>the shared base</td></tr>
+          <tr><td class="mono">…lumia-communication-agent</td><td>Communication</td><td>this one</td></tr>
+          <tr><td class="mono">…ashrah-scheduling-agent</td><td>Scheduling</td><td><strong>conflicts</strong></td></tr>
+        </table>
+      </div>
+      <p class="sub" style="margin:10px 0 0">Communication and Scheduling both add a <code>domain/projects.py</code> defining <code>Project</code> differently. Merging means deciding whether a project is one record both agents share, or two.</p>
+    </div>
+  </section>
+
+</main>
+
+<!-- agent sheet -->
+<div class="sheet" id="sheet">
+  <div class="scrim" id="scrim"></div>
+  <div class="sheet-body" id="sheetBody" role="dialog" aria-modal="true" aria-labelledby="sheetName"></div>
+</div>
+
+<nav role="tablist">
+  <button role="tab" aria-selected="true" data-tab="agents"><span class="ic">◉</span>Agents</button>
+  <button role="tab" aria-selected="false" data-tab="check"><span class="ic">⚑</span>Check</button>
+  <button role="tab" aria-selected="false" data-tab="how"><span class="ic">≡</span>How</button>
+</nav>
+
+<script>
+// ===== rules ported from comms/screening.py (source of truth) =====
+const EXTERNAL = ["client","general_contractor","project_manager","superintendent","subcontractor","supplier"];
+const ROLES = EXTERNAL.concat(["employee","crew_lead","management"]);
+const KINDS = [["daily_log",1],["schedule_reminder",1],["arrival_notice",1],["confirmation_request",1],
+  ["clarification_request",1],["crew_dispatch",1],["client_update",0],["vendor_request",0],
+  ["escalation_notice",0],["commitment",0],["other",0]];
+const AUTO = KINDS.filter(k=>k[1]).map(k=>k[0]);
+const NEGATIONS = ["no","not","zero","nil","without","any"];
+
+const CATS = [
+  {name:"pricing", scope:"all", guide:"Price and cost information needs approval before it goes to anyone.",
+   pats:["\\$\\s?\\d","\\bpric(?:e|es|ing)\\b","\\bcosts?\\b","\\bquot(?:e|es|ed|ation)\\b","\\binvoic(?:e|es|ing)\\b","\\bextra charge\\b","\\bhourly rate\\b"]},
+  {name:"change_order", scope:"all", guide:"Change-order language is contractual.",
+   pats:["\\bchange orders?\\b","\\bextra work\\b","\\badditional scope\\b","\\bscope change\\b"]},
+  {name:"contractual_commitment", scope:"all", guide:"Reads as a commitment on Ashrah's behalf.",
+   pats:["\\bwe (?:guarantee|warrant|commit|undertake)\\b","\\bwarrant(?:y|ies)\\b","\\bwe agree to\\b","\\bcontractual(?:ly)?\\b"]},
+  {name:"completion_guarantee", scope:"all", guide:"A completion claim needs verification and approval.",
+   pats:["\\b100\\s?%\\s*(?:complete|completed|done|finished)\\b","\\bfully (?:complete|completed|finished)\\b","\\ball work is (?:complete|completed|done|finished)\\b","\\bsigned off\\b"]},
+  {name:"schedule_commitment", scope:"external", guide:"A firm date to a client can carry financial consequences.",
+   pats:["\\bwe will (?:be )?(?:done|finished|complete[d]?)\\s+(?:by|on)\\b","\\bno later than\\b","\\bcompletion date\\b","\\bliquidated damages\\b"]},
+  {name:"fault_admission", scope:"all", guide:"Admitting — or denying — liability never goes out unapproved.",
+   pats:["\\bour (?:fault|mistake|error|negligence)\\b","\\bwe (?:damaged|caused|ruined|broke)\\b","\\bwe (?:are|were) (?:not )?(?:responsible|liable|at fault|to blame)\\b","\\bliab(?:le|ility)\\b"]},
+  {name:"dispute", scope:"all", guide:"Disputes are escalation territory.",
+   pats:["\\bdisputes?\\b","\\bback ?charges?\\b","\\bbreach of\\b","\\bdelay claim\\b","\\bwithhold(?:ing)? payment\\b"]},
+  {name:"legal_or_insurance", scope:"all", guide:"Legal and insurance matters go to management.",
+   pats:["\\blawyers?\\b","\\blegal (?:action|counsel|advice|notice)\\b","\\binsuran(?:ce|ce claim)\\b","\\bwcb\\b","\\bwsib\\b"]},
+  {name:"safety_incident", scope:"external", negatable:true, guide:"A safety incident follows escalation, not the daily log.",
+   pats:["\\binjur(?:y|ies|ed)\\b","\\baccidents?\\b","\\bambulance\\b","\\bhospital\\b","\\bnear ?miss\\b","\\bincident report\\b"]},
+  {name:"discipline", scope:"all", guide:"Disciplinary content needs approval.",
+   pats:["\\bdisciplinar(?:y|ily)\\b","\\bwritten warning\\b","\\bwrite[- ]up\\b","\\bmisconduct\\b"]},
+  {name:"termination", scope:"all", guide:"Termination notices need approval without exception.",
+   pats:["\\bterminat(?:e|ed|ing|ion)\\b","\\bdismiss(?:al|ed|ing)\\b","\\blaid off\\b"]},
+  {name:"refund_or_credit", scope:"all", guide:"Refunds and compensation are financial commitments.",
+   pats:["\\brefunds?\\b","\\bcompensat(?:e|ion|ing)\\b","\\breimburse(?:ment)?\\b","\\bfree of charge\\b","\\bat no (?:cost|charge)\\b"]},
+  {name:"serious_complaint", scope:"all", guide:"Serious complaints need a human first.",
+   pats:["\\bunacceptable\\b","\\bformal complaint\\b","\\bvery disappointed\\b","\\bthreat(?:en|ening|ened)\\b"]},
+  {name:"uncertainty", scope:"external", guide:"Uncertain statements get resolved before a client sees them.",
+   pats:["\\bnot sure\\b","\\bi think\\b","\\bmaybe\\b","\\bunclear\\b","\\bunverified\\b","\\bassum(?:e|ed|ing|ption)\\b","\\bto be confirmed\\b","\\bpossibly\\b"]},
+  {name:"confidential_disclosure", scope:"external", guide:"Internal information must not reach an outside recipient.",
+   pats:["\\bmargins?\\b","\\bmark[- ]?ups?\\b","\\bprofit(?:ability)?\\b","\\bpayroll\\b","\\bwages?\\b","\\bour cost\\b","\\baccess code\\b","\\balarm code\\b","\\bpasswords?\\b"]}
+];
+
+const AGENTS = [
+  {role:"intake", fam:"communication", why:"Turns field reports — any language, voice, photo — into verified facts", l1:15,l2:4,l3:0, gated:[],
+   eg:"Process today's field reports and tell me what conflicts with the clock records."},
+  {role:"client_comms", fam:"communication", why:"Writes to clients, GCs and supers; owns the daily log", l1:16,l2:6,l3:0, gated:[],
+   eg:"Compose and send today's daily log for the Riverbend project."},
+  {role:"crew_comms", fam:"communication", why:"Dispatches crews and chases the missing detail", l1:11,l2:6,l3:0, gated:[],
+   eg:"Send tomorrow's dispatch to the Riverbend crew with start time and access notes."},
+  {role:"vendor_comms", fam:"communication", why:"Materials, deliveries and supplier coordination", l1:10,l2:5,l3:1, gated:["place_material_order"],
+   eg:"Ask Westline to confirm delivery of the primer before Thursday."},
+  {role:"escalation", fam:"communication", why:"Prepares what management needs to decide quickly", l1:16,l2:1,l3:0, gated:[],
+   eg:"The crew reported ceiling work that the contract excludes. Write this up for management."},
+  {role:"director", fam:"growth", why:"Owns the growth loop and decides where effort goes", l1:12,l2:4,l3:0, gated:[],
+   eg:"Run today's growth cycle and tell me the single most valuable thing to do next."},
+  {role:"research", fam:"growth", why:"Finds and qualifies opportunity from market signals", l1:14,l2:3,l3:0, gated:[],
+   eg:"Find property managers in Calgary with turnovers coming."},
+  {role:"outreach", fam:"growth", why:"Writes and sends account-specific outreach", l1:11,l2:5,l3:1, gated:["send_first_contact_email"],
+   eg:"Follow up with Northgate about the estimate we sent."},
+  {role:"content", fam:"growth", why:"Case studies, capability statements, project write-ups", l1:11,l2:0,l3:1, gated:["publish_content"],
+   eg:"Draft a case study from the Riverbend job."},
+  {role:"crm", fam:"growth", why:"Keeps the pipeline accurate and every account managed", l1:12,l2:6,l3:0, gated:[],
+   eg:"Find accounts with no next action and fix them."}
+];
+
+const $ = id => document.getElementById(id);
+let ENGINE = "browser", RUNS_ON = false;
+
+// ===== screening =====
+function negated(t,i){ const w=(t.slice(Math.max(0,i-24),i).toLowerCase().match(/[a-z]+/g))||[]; return w.length&&NEGATIONS.includes(w[w.length-1]); }
+function screenLocal(text, role) {
+  const external = EXTERNAL.includes(role), findings = [];
+  for (const c of CATS) {
+    if (c.scope === "external" && !external) continue;
+    for (const p of c.pats) {
+      let re; try { re = new RegExp(p,"gi"); } catch(e){ continue; }
+      let m, hit=null;
+      while ((m = re.exec(text)) !== null) { if (c.negatable && negated(text,m.index)) continue; hit=m; break; }
+      if (hit) { findings.push({cat:c.name, guide:c.guide, trigger:hit[0]}); break; }
+    }
+  }
+  return {external, findings};
+}
+
+// ===== tabs =====
+document.querySelectorAll("nav button").forEach(b => b.onclick = () => {
+  document.querySelectorAll("nav button").forEach(x => x.setAttribute("aria-selected", x === b));
+  document.querySelectorAll(".panel").forEach(p => p.classList.toggle("on", p.id === "p-" + b.dataset.tab));
+  window.scrollTo(0,0);
+});
+
+// ===== agents =====
+$("agentList").innerHTML = AGENTS.map((a,i) => `
+  <button class="agent" data-i="${i}">
+    <span style="flex:1">
+      <span class="name">${a.role.replace(/_/g," ")}</span>
+      <span class="why">${a.why}</span>
+      <span class="meta">
+        <span class="fam">${a.fam}</span>
+        <span class="fam">${a.l1+a.l2+a.l3} tools</span>
+        ${a.l3 ? `<span class="fam l3">${a.l3} needs approval</span>` : `<span class="fam">runs cold</span>`}
+      </span>
+    </span>
+    <span class="chev">›</span>
+  </button>`).join("");
+
+document.querySelectorAll(".agent").forEach(b => b.onclick = () => openSheet(AGENTS[+b.dataset.i]));
+
+function openSheet(a) {
+  const token = localStorage.getItem("lumia_token") || "";
+  $("sheetBody").innerHTML = `
+    <div class="grab"></div>
+    <h2 id="sheetName" style="font-size:18px;text-transform:none;letter-spacing:0;color:var(--ink);margin-bottom:4px">${a.role.replace(/_/g," ")}</h2>
+    <p class="sub">${a.why}</p>
+    <div class="levels">
+      <div class="lv"><b>${a.l1}</b><span>runs free</span></div>
+      <div class="lv"><b>${a.l2}</b><span>within rules</span></div>
+      <div class="lv"><b>${a.l3}</b><span>needs you</span></div>
+    </div>
+    ${a.gated.length ? `<div class="tools">${a.gated.map(t=>`<span class="tool l3">${t}</span>`).join("")}</div>` : ""}
+    <div class="note" style="margin:14px 0">Starts cold every time. Its own tools, its own connection, no memory of the last run.</div>
+
+    <label for="task">What should it do</label>
+    <textarea id="task" placeholder="${a.eg}">${a.eg}</textarea>
+
+    ${RUNS_ON ? `
+      ${token ? "" : `<div style="margin-top:12px"><label for="tok">Access token</label><input id="tok" type="password" placeholder="from LUMIA_RUN_TOKEN" autocomplete="current-password"></div>`}
+      <div style="margin-top:12px"><button class="go" id="runBtn">Run ${a.role.replace(/_/g," ")}</button></div>
+    ` : `
+      <div class="note" style="margin-top:12px">Running from here is switched off. Set <code>LUMIA_RUN_TOKEN</code> and <code>ANTHROPIC_API_KEY</code> on the host to turn it on — or run it from a terminal:</div>
+      <pre style="margin-top:10px">python -m lumia.cli comms run "${a.eg.replace(/"/g,'\\"')}" --role ${a.role}</pre>
+    `}
+    <div id="runOut"></div>
+    <div class="btnrow"><button class="ghost" id="closeSheet">Close</button></div>
+  `;
+  $("sheet").classList.add("on");
+  document.body.style.overflow = "hidden";
+  $("closeSheet").onclick = closeSheet;
+  if (RUNS_ON && $("runBtn")) $("runBtn").onclick = () => doRun(a);
+}
+function closeSheet(){ $("sheet").classList.remove("on"); document.body.style.overflow = ""; }
+$("scrim").onclick = closeSheet;
+document.addEventListener("keydown", e => { if (e.key === "Escape") closeSheet(); });
+
+async function doRun(a) {
+  const btn = $("runBtn"), task = $("task").value.trim();
+  if (!task) return;
+  let token = localStorage.getItem("lumia_token") || ($("tok") ? $("tok").value.trim() : "");
+  if (!token) { $("runOut").innerHTML = `<div class="verdict hold"><h3>Token needed</h3><p class="sub">Enter the access token to run an agent.</p></div>`; return; }
+
+  btn.disabled = true; btn.textContent = "Running…";
+  $("runOut").innerHTML = `<p class="sub" style="margin-top:12px">Starting a cold run. This can take a minute.</p>`;
+  try {
+    const r = await fetch("/api/run", {
+      method: "POST",
+      headers: {"Content-Type":"application/json", "X-Lumia-Token": token},
+      body: JSON.stringify({role: a.role, task})
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || "run failed");
+    localStorage.setItem("lumia_token", token);
+    const held = (d.held_for_approval || []).length;
+    $("runOut").innerHTML = `
+      <div class="verdict ${held ? "hold" : "pass"}">
+        <h3>${d.status === "finished" ? (held ? "Done — something needs you" : "Done") : "Failed"}</h3>
+        <div class="lvl">${d.iterations} turn(s) · ${(d.did||[]).length} action(s) · ${d.seconds}s · cold start</div>
+        <p style="margin:10px 0 0;font-size:14.5px;white-space:pre-wrap">${(d.reply || d.error || "").replace(/[<>&]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]))}</p>
+        ${held ? `<ul class="findings"><li>${held} action(s) queued for your approval — they did <strong>not</strong> happen.</li></ul>` : ""}
+      </div>`;
+  } catch (e) {
+    $("runOut").innerHTML = `<div class="verdict hold"><h3>Couldn't run</h3><p class="sub" style="margin:6px 0 0">${e.message}</p></div>`;
+    if (String(e.message).includes("token")) localStorage.removeItem("lumia_token");
+  } finally { btn.disabled = false; btn.textContent = `Run ${a.role.replace(/_/g," ")}`; }
+}
+
+// ===== gate =====
+const kindSel = $("kind"), roleSel = $("role");
+KINDS.forEach(([k,auto]) => kindSel.add(new Option(k.replace(/_/g," ") + (auto ? "" : " — always needs you"), k)));
+ROLES.forEach(r => roleSel.add(new Option(r.replace(/_/g," "), r)));
+roleSel.value = "project_manager";
+const DEFAULT_BODY = $("body").value;
+
+async function render() {
+  const text = $("body").value, role = roleSel.value, kind = kindSel.value;
+  if (ENGINE === "python") {
+    try {
+      const r = await fetch("/api/gate", {method:"POST", headers:{"Content-Type":"application/json"},
+        body: JSON.stringify({kind, recipient_role: role, body: text})});
+      const v = await r.json();
+      const f = v.screening.findings.concat(v.screening.confidential_disclosures)
+        .map(x => ({cat:x.category, guide:x.guidance, trigger:x.trigger}));
+      return paint(text, kind, f, v.level, v.reason, v.held, v.screening.external_recipient);
+    } catch (e) { ENGINE = "browser"; }
+  }
+  const {external, findings} = screenLocal(text, role);
+  const kindOk = AUTO.includes(kind), held = !kindOk || findings.length > 0;
+  let reason, level;
+  if (!kindOk) { level = 3; reason = `A ${kind.replace(/_/g," ")} always needs a person. Its wording isn't even reached.`; }
+  else if (findings.length) { level = 3; reason = "The wording needs approval — " + findings.map(f=>`${f.cat} ('${f.trigger}')`).join("; ") + "."; }
+  else { level = 2; reason = `A ${kind.replace(/_/g," ")} to a ${role.replace(/_/g," ")} with nothing in it that needs approval.`; }
+  paint(text, kind, kindOk ? findings : [], level, reason, held, external);
+}
+
+function paint(text, kind, findings, level, reason, held, external) {
+  const esc = s => String(s).replace(/[&<>]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));
+  let marked = esc(text);
+  for (const f of findings) {
+    const t = esc(f.trigger).replace(/[.*+?^${}()|[\]\\]/g,"\\$&");
+    marked = marked.replace(new RegExp(t,"i"), m => `<mark>${m}</mark>`);
+  }
+  $("out").innerHTML = `
+    <div class="verdict ${held ? "hold" : "pass"}">
+      <h3>${held ? "Held for you" : "Sends on its own"}</h3>
+      <div class="lvl">Level ${level} · ${external ? "outside the company" : "internal"} · ${ENGINE === "python" ? "checked by the engine" : "checked in this browser"}</div>
+      <p style="margin:10px 0 0;font-size:14.5px">${esc(reason)}</p>
+      ${held ? `<p class="sub" style="margin:8px 0 0;font-size:13px">The agent is told plainly it didn't send, so it reports that instead of claiming it did.</p>` : ""}
+      ${findings.length ? `<ul class="findings">${findings.map(f=>`<li><span class="cat">${esc(f.cat)}</span> — ${esc(f.guide)}</li>`).join("")}</ul>` : ""}
+    </div>
+    ${findings.length ? `<div style="margin-top:12px"><label>What tripped it</label><pre style="white-space:pre-wrap">${marked}</pre></div>` : ""}`;
+}
+
+$("tryPrice").onclick = () => { $("body").value = DEFAULT_BODY + "\n\nThe extra ceiling work will be $4,200."; render(); };
+$("tryDone").onclick  = () => { $("body").value = DEFAULT_BODY.replace("Primer applied to corridor walls.","The north corridor is 100% complete."); render(); };
+$("reset").onclick    = () => { $("body").value = DEFAULT_BODY; kindSel.value="daily_log"; roleSel.value="project_manager"; render(); };
+["input","change"].forEach(ev => { $("body").addEventListener(ev,render); kindSel.addEventListener(ev,render); roleSel.addEventListener(ev,render); });
+
+// ===== engine probe =====
+fetch("/api/health").then(r => r.ok ? r.json() : null).then(h => {
+  if (!h || h.engine !== "python") throw 0;
+  ENGINE = "python"; RUNS_ON = !!h.runs_enabled;
+  $("engine").innerHTML = `<span class="dot on"></span> ${RUNS_ON ? "ready to run" : "read-only"}`;
+  render();
+}).catch(() => {
+  $("engine").innerHTML = `<span class="dot"></span> offline`;
+});
+
+render();
+</script>
+
+</body>
+</html>

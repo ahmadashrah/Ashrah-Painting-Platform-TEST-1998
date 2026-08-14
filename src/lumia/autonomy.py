@@ -21,7 +21,9 @@ from enum import IntEnum
 from pathlib import Path
 from typing import Any
 
+from .comms.screening import screen_record
 from .domain.accounts import new_id
+from .domain.projects import CommKind
 
 
 class AutonomyLevel(IntEnum):
@@ -40,8 +42,11 @@ TOOL_LEVELS: dict[str, AutonomyLevel] = {
     "find_accounts": AutonomyLevel.AUTONOMOUS,
     "list_contacts": AutonomyLevel.AUTONOMOUS,
     "get_relationship_history": AutonomyLevel.AUTONOMOUS,
+    "build_account_brief": AutonomyLevel.AUTONOMOUS,
     "score_account_tool": AutonomyLevel.AUTONOMOUS,
+    "priority_accounts": AutonomyLevel.AUTONOMOUS,
     "pipeline_report": AutonomyLevel.AUTONOMOUS,
+    "save_content": AutonomyLevel.AUTONOMOUS,
     "weekly_growth_review": AutonomyLevel.AUTONOMOUS,
     "draft_outreach": AutonomyLevel.AUTONOMOUS,
     "draft_case_study": AutonomyLevel.AUTONOMOUS,
@@ -66,6 +71,49 @@ TOOL_LEVELS: dict[str, AutonomyLevel] = {
     "send_first_contact_email": AutonomyLevel.APPROVAL_REQUIRED,
     "send_pricing_commitment": AutonomyLevel.APPROVAL_REQUIRED,
     "publish_content": AutonomyLevel.APPROVAL_REQUIRED,
+
+    # --- project communication -------------------------------------------
+    # Level 1 — reading, intake, processing and preparing. The whole
+    # transcribe → translate → verify → draft pipeline runs freely; none of
+    # it reaches a recipient.
+    "list_projects": AutonomyLevel.AUTONOMOUS,
+    "get_project": AutonomyLevel.AUTONOMOUS,
+    "record_field_submission": AutonomyLevel.AUTONOMOUS,
+    "process_field_submission": AutonomyLevel.AUTONOMOUS,
+    "verify_field_submission": AutonomyLevel.AUTONOMOUS,
+    # Reading a recording or a photo is analysis, not action.
+    "transcribe_field_submission": AutonomyLevel.AUTONOMOUS,
+    "describe_media": AutonomyLevel.AUTONOMOUS,
+    "list_field_submissions": AutonomyLevel.AUTONOMOUS,
+    "add_project_media": AutonomyLevel.AUTONOMOUS,
+    "caption_media": AutonomyLevel.AUTONOMOUS,
+    "list_project_media": AutonomyLevel.AUTONOMOUS,
+    "build_daily_log": AutonomyLevel.AUTONOMOUS,
+    "compose_daily_log": AutonomyLevel.AUTONOMOUS,
+    "draft_communication": AutonomyLevel.AUTONOMOUS,
+    "screen_message": AutonomyLevel.AUTONOMOUS,
+    "recommend_channel": AutonomyLevel.AUTONOMOUS,
+    "communication_history": AutonomyLevel.AUTONOMOUS,
+    "unanswered_communications": AutonomyLevel.AUTONOMOUS,
+    "list_open_items": AutonomyLevel.AUTONOMOUS,
+    "list_escalations": AutonomyLevel.AUTONOMOUS,
+    "record_communication_preference": AutonomyLevel.AUTONOMOUS,
+    "communication_performance": AutonomyLevel.AUTONOMOUS,
+    # Level 2 — writes to the project record, and internal notifications.
+    # Escalation sits here deliberately: telling a manager about an injury
+    # or a dispute is the action the spec requires immediately, and queuing
+    # it behind an approval would defeat the purpose.
+    "upsert_project": AutonomyLevel.CONTROLLED,
+    "upsert_project_contact": AutonomyLevel.CONTROLLED,
+    "upsert_crew_member": AutonomyLevel.CONTROLLED,
+    "log_communication_response": AutonomyLevel.CONTROLLED,
+    "raise_open_item": AutonomyLevel.CONTROLLED,
+    "close_open_item": AutonomyLevel.CONTROLLED,
+    "raise_escalation": AutonomyLevel.CONTROLLED,
+    # Dynamic — resolved per call against the stored draft. See _classify_send.
+    "send_communication": AutonomyLevel.CONTROLLED,
+    # Level 3 — committing Ashrah to a purchase.
+    "place_material_order": AutonomyLevel.APPROVAL_REQUIRED,
 }
 
 #: Outbound tools whose level depends on who is being contacted.
@@ -73,6 +121,19 @@ OUTBOUND_TOOLS = {"send_followup_email", "send_first_contact_email", "publish_co
 
 #: Accounts worth at least this much per year get human eyes on any outbound.
 HIGH_VALUE_THRESHOLD = 150_000.0
+
+#: The spec's Level 2 list for project communication: the message kinds
+#: management has approved as routine and repeatable. Everything outside this
+#: set requires a human, whatever it says — and everything inside it still has
+#: to survive content screening.
+AUTO_SENDABLE_KINDS = {
+    CommKind.DAILY_LOG.value,
+    CommKind.SCHEDULE_REMINDER.value,
+    CommKind.ARRIVAL_NOTICE.value,
+    CommKind.CONFIRMATION_REQUEST.value,
+    CommKind.CLARIFICATION_REQUEST.value,
+    CommKind.CREW_DISPATCH.value,
+}
 
 
 @dataclass
@@ -82,6 +143,9 @@ class ApprovalRequest:
     reason: str
     agent: str = ""
     account_id: str = ""
+    project_id: str = ""
+    #: Which run raised this, so an approval can be traced to its job.
+    run_ref: str = ""
     status: str = "pending"      # pending | approved | rejected | executed
     decided_by: str = ""
     decision_note: str = ""
@@ -152,15 +216,26 @@ class ApprovalQueue:
                     return
 
 
-def classify(tool_name: str, arguments: dict[str, Any], account: dict[str, Any] | None = None) -> tuple[AutonomyLevel, str]:
+def classify(
+    tool_name: str,
+    arguments: dict[str, Any],
+    account: dict[str, Any] | None = None,
+    draft: dict[str, Any] | None = None,
+) -> tuple[AutonomyLevel, str]:
     """Return the effective autonomy level for one call, plus the reason.
 
-    `account` is the target account record when the tool acts on one; it is
-    what makes escalation possible.
+    `account` is the target account record when the tool acts on one, and
+    `draft` is the stored communication when the tool sends one. Both are
+    what make escalation possible: the level depends on who is being
+    contacted and what the message actually says, not only on which tool
+    was reached for.
     """
     base = TOOL_LEVELS.get(tool_name, AutonomyLevel.APPROVAL_REQUIRED)
     if tool_name not in TOOL_LEVELS:
         return base, f"'{tool_name}' is not in the autonomy table; unknown tools require approval."
+
+    if tool_name == "send_communication":
+        return _classify_send(draft)
 
     if tool_name not in OUTBOUND_TOOLS or account is None:
         return base, f"'{tool_name}' is classified Level {int(base)}."
@@ -182,3 +257,50 @@ def classify(tool_name: str, arguments: dict[str, Any], account: dict[str, Any] 
             "high-value threshold for autonomous outbound.",
         )
     return base, f"'{tool_name}' is classified Level {int(base)} for this target."
+
+
+def _classify_send(draft: dict[str, Any] | None) -> tuple[AutonomyLevel, str]:
+    """Decide whether one outbound project message may send without a human.
+
+    Three gates, in order, and all three must pass:
+
+    1. The draft has to exist and name a recipient the platform resolved.
+       An unreadable or unverified draft is never sent automatically.
+    2. Its kind has to be on the spec's Level 2 list — routine progress
+       reports, schedule reminders, arrival notices, confirmation and
+       clarification requests, crew dispatches. Anything else is Level 3
+       before its content is even read.
+    3. Its *stored* body has to survive content screening. The body is read
+       from the record rather than from the call's arguments, so a message
+       cannot be screened as one thing and sent as another.
+    """
+    if draft is None:
+        return (
+            AutonomyLevel.APPROVAL_REQUIRED,
+            "The draft could not be read, so its content cannot be screened. "
+            "An unverifiable message is never sent automatically.",
+        )
+
+    if not draft.get("recipient_verified"):
+        return (
+            AutonomyLevel.APPROVAL_REQUIRED,
+            "The recipient was not resolved against the project's recorded contacts.",
+        )
+
+    kind = str(draft.get("kind", ""))
+    if kind not in AUTO_SENDABLE_KINDS:
+        return (
+            AutonomyLevel.APPROVAL_REQUIRED,
+            f"A '{kind or 'unclassified'}' message is not on the list of routine, repeatable "
+            "communications management has approved for automatic sending.",
+        )
+
+    result = screen_record(draft)
+    if result.requires_approval:
+        return AutonomyLevel.APPROVAL_REQUIRED, result.reason()
+
+    return (
+        AutonomyLevel.CONTROLLED,
+        f"A '{kind}' message to {draft.get('recipient_name') or 'a recorded contact'} with no "
+        "approval triggers in its content — Level 2, sends within approved rules.",
+    )

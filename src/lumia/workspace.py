@@ -11,9 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .autonomy import ApprovalQueue
+from .comms.ledger import CommunicationLedger
 from .config import SETTINGS, Settings
 from .integrations.crm import CRM
 from .integrations.messaging import EmailService, SMSService
+from .integrations.openai import OpenAIService
 from .integrations.research import ConstructionData, WebSearch
 from .integrations.scheduling import CalendarService, WeatherService
 from .memory import Memory
@@ -25,6 +27,7 @@ class Workspace:
     settings: Settings
     store: LocalStore
     crm: CRM
+    comms: CommunicationLedger
     memory: Memory
     approvals: ApprovalQueue
     email: EmailService
@@ -33,6 +36,34 @@ class Workspace:
     weather: WeatherService
     search: WebSearch
     construction: ConstructionData
+    openai: OpenAIService
+    #: The run this workspace belongs to, once one has been issued a number.
+    #: A workspace is built per run, so this is the run's scope.
+    run_ref: str = ""
+
+    def stamp_run(self, reference: str) -> None:
+        """Bind this workspace to a run, so every write records which one."""
+        self.run_ref = reference
+        self.store.run_ref = reference
+
+    def set_egress_guard(self, guard: Any) -> None:
+        """Bound every integration to the hosts this deployment allows."""
+        for service in self._services():
+            service.egress = guard
+
+    def _services(self) -> tuple[Any, ...]:
+        return (self.crm, self.email, self.sms, self.calendar,
+                self.weather, self.search, self.construction, self.openai)
+
+    def set_deadline(self, deadline: Any) -> None:
+        """Share the run's time budget with every outbound integration.
+
+        Each one then sizes its own timeouts and retries against what is
+        actually left, instead of against a fixed number that assumed it was
+        the only call in the run.
+        """
+        for service in self._services():
+            service.budget = deadline
 
     @classmethod
     def build(cls, settings: Settings | None = None, data_dir: Path | None = None) -> "Workspace":
@@ -41,11 +72,16 @@ class Workspace:
         root.mkdir(parents=True, exist_ok=True)
 
         store = LocalStore(root / "lumia.json")
+        openai = OpenAIService(settings.service("openai"))
         return cls(
             settings=settings,
             store=store,
             crm=CRM(settings.service("crm"), store),
-            memory=Memory(store),
+            comms=CommunicationLedger(store),
+            # Memory embeds through OpenAI when configured, and falls back to
+            # keyword matching when it is not — see Memory.recall.
+            memory=Memory(store, embedder=openai, model=settings.embed_model),
+            openai=openai,
             approvals=ApprovalQueue(root / "approvals.json"),
             email=EmailService(settings.service("email")),
             sms=SMSService(settings.service("sms")),
@@ -59,6 +95,7 @@ class Workspace:
         """Which integrations are live vs simulated — shown at startup."""
         services = {
             "crm": self.crm,
+            "openai": self.openai,
             "email": self.email,
             "sms": self.sms,
             "calendar": self.calendar,
@@ -73,4 +110,6 @@ class Workspace:
             "data_dir": str(self.settings.data_dir),
             "integrations": {name: ("live" if svc.live else "mock") for name, svc in services.items()},
             "pending_approvals": len(self.approvals.pending()),
+            "active_projects": len(self.comms.active_projects()),
+            "open_escalations": len(self.comms.escalations(status="open")),
         }

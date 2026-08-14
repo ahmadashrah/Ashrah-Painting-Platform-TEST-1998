@@ -14,6 +14,7 @@ from typing import Any
 
 #: Collections the platform expects to exist.
 COLLECTIONS = (
+    # Growth side: accounts, pipeline and what was learned from working it.
     "accounts",
     "contacts",
     "interactions",
@@ -24,15 +25,42 @@ COLLECTIONS = (
     "proposals",
     "content",
     "quotes",
+    # Delivery side: projects, what the field reported and what was sent out.
+    "projects",
+    "project_contacts",
+    "crew",
+    "time_records",
+    "submissions",
+    "media",
+    "daily_logs",
+    "communications",
+    "open_items",
+    "escalations",
+    # Every agent run, isolated and recorded — see runner.py.
+    "runs",
 )
+
+
+#: Stamped onto every record written during a numbered run.
+RUN_FIELD = "_run"
 
 
 class LocalStore:
     def __init__(self, path: Path) -> None:
         self.path = path
         self._lock = threading.Lock()
+        #: The run currently writing through this store, if any. Set once per
+        #: run (see Runner) rather than passed to every call — every write
+        #: below then carries the run that caused it, including writes from
+        #: tools that do not exist yet.
+        self.run_ref = ""
         if not self.path.exists():
             self._write({name: {} for name in COLLECTIONS})
+
+    def _stamp(self, value: dict[str, Any]) -> dict[str, Any]:
+        if not self.run_ref:
+            return value
+        return {**value, RUN_FIELD: self.run_ref}
 
     def _read(self) -> dict[str, dict[str, Any]]:
         try:
@@ -50,11 +78,12 @@ class LocalStore:
         tmp.replace(self.path)
 
     def put(self, collection: str, key: str, value: dict[str, Any]) -> dict[str, Any]:
+        stamped = self._stamp(value)
         with self._lock:
             data = self._read()
-            data.setdefault(collection, {})[key] = value
+            data.setdefault(collection, {})[key] = stamped
             self._write(data)
-        return value
+        return stamped
 
     def patch(self, collection: str, key: str, changes: dict[str, Any]) -> dict[str, Any] | None:
         with self._lock:
@@ -62,7 +91,7 @@ class LocalStore:
             record = data.setdefault(collection, {}).get(key)
             if record is None:
                 return None
-            record.update(changes)
+            record.update(self._stamp(changes))
             self._write(data)
             return record
 

@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Callable
 
+from .comms.tools import CommunicationTools
 from .domain.accounts import (
     Account,
     AccountTier,
@@ -34,6 +35,7 @@ from .domain.models import JobType, Surface, SurfaceCondition
 from .domain.pricing import build_quote, estimate_duration_days
 from .domain.scoring import prioritize, score_account
 from .memory import ImprovementProposal, Lesson
+from .schema import array, boolean, integer, number, obj, string
 from .workspace import Workspace
 
 
@@ -52,39 +54,13 @@ class ToolSpec:
         }
 
 
-def obj(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
-    return {
-        "type": "object",
-        "properties": properties,
-        "required": required or [],
-    }
+class Toolbox(CommunicationTools):
+    """Binds tool functions to a live workspace and exposes their schemas.
 
-
-def string(description: str, enum: list[str] | None = None) -> dict[str, Any]:
-    spec: dict[str, Any] = {"type": "string", "description": description}
-    if enum:
-        spec["enum"] = enum
-    return spec
-
-
-def number(description: str) -> dict[str, Any]:
-    return {"type": "number", "description": description}
-
-
-def integer(description: str) -> dict[str, Any]:
-    return {"type": "integer", "description": description}
-
-
-def boolean(description: str) -> dict[str, Any]:
-    return {"type": "boolean", "description": description}
-
-
-def array(description: str, item_type: str = "string") -> dict[str, Any]:
-    return {"type": "array", "description": description, "items": {"type": item_type}}
-
-
-class Toolbox:
-    """Binds tool functions to a live workspace and exposes their schemas."""
+    The growth tools are defined here; the project-communication tools come
+    from the mixin. Both halves register into the same table, so the
+    autonomy gate sees one uniform surface.
+    """
 
     def __init__(self, workspace: Workspace) -> None:
         self.ws = workspace
@@ -1076,6 +1052,8 @@ class Toolbox:
             ),
             self._schedule_meeting,
         )
+
+        self._register_communication_tools()
 
 
 # --- helpers -------------------------------------------------------------

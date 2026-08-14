@@ -19,7 +19,43 @@ DEFAULT_MODEL = "claude-opus-5"
 # low | medium | high | xhigh | max
 DEFAULT_EFFORT = "high"
 
+# OpenAI models, used where they are the better tool rather than as a
+# wholesale replacement. Whisper handles the field's Arabic, Kurdish and
+# French voice notes; the vision model reads submitted photos; embeddings
+# give memory recall by meaning instead of by shared keywords.
+DEFAULT_TRANSCRIBE_MODEL = "whisper-1"
+DEFAULT_VISION_MODEL = "gpt-4o-mini"
+DEFAULT_EMBED_MODEL = "text-embedding-3-small"
+
+
+def provider_for(model: str) -> str:
+    """Which API a model name belongs to.
+
+    Inferred rather than configured separately, so setting ASHRAH_MODEL to a
+    GPT model is all it takes to move an agent across — there is no second
+    switch to forget.
+    """
+    name = model.lower()
+    if name.startswith(("gpt-", "o1", "o3", "o4", "chatgpt")):
+        return "openai"
+    return "anthropic"
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+#: True when running from a source checkout rather than an installed package.
+IN_CHECKOUT = (PROJECT_ROOT / "src" / "lumia").is_dir()
+
+
+def default_data_dir() -> Path:
+    """Where agent state lives when ASHRAH_DATA_DIR is not set.
+
+    In a checkout that is `./data` beside the source. Installed, the same
+    expression resolves inside site-packages — which is the wrong place on
+    every count: it is ephemeral on a container host, often read-only, and
+    shared between every project using that interpreter. Fall back to the
+    working directory, which on a deployment is the app root.
+    """
+    return (PROJECT_ROOT if IN_CHECKOUT else Path.cwd()) / "data"
 
 
 def _load_dotenv(path: Path) -> None:
@@ -48,10 +84,21 @@ class ServiceCredentials:
     api_key: str | None = None
     base_url: str | None = None
     extra: dict[str, str] = field(default_factory=dict)
+    #: The environment variable this key comes from. Carried so `status` can
+    #: say *which* variable to set rather than only that one is missing.
+    key_var: str = ""
+    also_needs: tuple[str, ...] = ()
 
     @property
     def configured(self) -> bool:
         return bool(self.api_key)
+
+    @property
+    def missing_vars(self) -> list[str]:
+        """Which variables still have to be set for this service to go live."""
+        if self.configured:
+            return [v for v in self.also_needs if not os.environ.get(v)]
+        return [self.key_var, *[v for v in self.also_needs if not os.environ.get(v)]]
 
 
 def _service(name: str, key_var: str, url_var: str, default_url: str, **extra_vars: str) -> ServiceCredentials:
@@ -60,6 +107,8 @@ def _service(name: str, key_var: str, url_var: str, default_url: str, **extra_va
         api_key=os.environ.get(key_var) or None,
         base_url=os.environ.get(url_var) or default_url,
         extra={k: os.environ[v] for k, v in extra_vars.items() if os.environ.get(v)},
+        key_var=key_var,
+        also_needs=tuple(extra_vars.values()),
     )
 
 
@@ -73,16 +122,44 @@ class Settings:
     company_email: str
     data_dir: Path
     services: dict[str, ServiceCredentials]
+    transcribe_model: str = DEFAULT_TRANSCRIBE_MODEL
+    vision_model: str = DEFAULT_VISION_MODEL
+    embed_model: str = DEFAULT_EMBED_MODEL
 
     def service(self, name: str) -> ServiceCredentials:
         return self.services.get(name, ServiceCredentials(name=name))
 
+    @property
+    def provider(self) -> str:
+        """Which API the agents' model belongs to."""
+        return provider_for(self.model)
+
 
 def load_settings() -> Settings:
-    data_dir = Path(os.environ.get("ASHRAH_DATA_DIR", PROJECT_ROOT / "data"))
-    data_dir.mkdir(parents=True, exist_ok=True)
+    data_dir = Path(os.environ.get("ASHRAH_DATA_DIR") or default_data_dir())
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # Importing the package must not explode because a directory could
+        # not be made. Fall back to a temporary one and say so loudly — a
+        # deployment that cannot persist should still boot and report.
+        import tempfile
+
+        fallback = Path(tempfile.gettempdir()) / "lumia-data"
+        fallback.mkdir(parents=True, exist_ok=True)
+        print(
+            f"warning: cannot write to {data_dir} ({exc}); using {fallback}. "
+            "Set ASHRAH_DATA_DIR to a writable path — on Railway, attach a volume, "
+            "or state will be lost on every redeploy.",
+            flush=True,
+        )
+        data_dir = fallback
 
     services = {
+        # OpenAI: speech-to-text for field voice notes, vision for submitted
+        # photos, embeddings for memory recall, and GPT models as a second
+        # brain for the agent loop.
+        "openai": _service("openai", "OPENAI_API_KEY", "OPENAI_BASE_URL", "https://api.openai.com/v1"),
         # Record of truth for accounts, contacts and pipeline.
         "crm": _service("crm", "CRM_API_KEY", "CRM_BASE_URL", "https://api.example-crm.com/v1"),
         # Outreach email.
@@ -131,6 +208,9 @@ def load_settings() -> Settings:
         company_email=os.environ.get("COMPANY_EMAIL", ""),
         data_dir=data_dir,
         services=services,
+        transcribe_model=os.environ.get("OPENAI_TRANSCRIBE_MODEL", DEFAULT_TRANSCRIBE_MODEL),
+        vision_model=os.environ.get("OPENAI_VISION_MODEL", DEFAULT_VISION_MODEL),
+        embed_model=os.environ.get("OPENAI_EMBED_MODEL", DEFAULT_EMBED_MODEL),
     )
 
 
