@@ -136,6 +136,23 @@
   nav button .ic { font-size: 19px; line-height: 1; }
   nav button[aria-selected="true"] { color: var(--accent); font-weight: 600; }
 
+  nav button { position: relative; }
+  .badge {
+    position: absolute; top: 8px; left: 50%; margin-left: 6px; min-width: 17px; height: 17px;
+    padding: 0 5px; border-radius: 9px; background: var(--hold); color: #fff;
+    font-size: 11px; font-weight: 700; line-height: 17px; text-align: center;
+  }
+  /* One held message is a whole card: the body has to be readable before
+     anyone can honestly approve it. */
+  .appr { border-left: 3px solid var(--hold); }
+  .appr .who { font-size: 12px; color: var(--ink2); text-transform: uppercase; letter-spacing: .04em; }
+  .appr .why { font-size: 13.5px; margin: 6px 0 10px; }
+  .appr pre {
+    white-space: pre-wrap; word-break: break-word; margin: 0 0 12px;
+    background: var(--surface2); border: 1px solid var(--line); border-radius: 8px;
+    padding: 11px 13px; font-size: 13.5px; max-height: 340px; overflow: auto;
+  }
+
   .note { background: var(--surface2); border: 1px solid var(--line); border-radius: 8px; padding: 11px 13px; font-size: 13.5px; }
   table { width: 100%; border-collapse: collapse; font-size: 14px; }
   th, td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
@@ -188,6 +205,21 @@ Plan for the Next Working Day
       </div>
     </div>
     <div id="out"></div>
+  </section>
+
+  <!-- ========== APPROVE ========== -->
+  <section id="p-queue" class="panel">
+    <h2>Waiting on you</h2>
+    <p class="sub" style="margin-bottom:14px">Everything the agents held back because it needs a person. Nothing here has been sent.</p>
+
+    <div class="card" id="qAuth">
+      <label for="qToken">Operator token</label>
+      <input id="qToken" type="password" autocomplete="current-password" placeholder="LUMIA_RUN_TOKEN" />
+      <p class="sub" style="margin:8px 0 10px">Stays on this device. It is the same value set in the host's variables.</p>
+      <div class="btnrow"><button id="qUnlock">Unlock</button><button class="ghost" id="qForget">Forget</button></div>
+    </div>
+
+    <div id="qOut"></div>
   </section>
 
   <!-- ========== HOW ========== -->
@@ -246,6 +278,7 @@ python -m lumia.cli comms intake</pre>
 <nav role="tablist">
   <button role="tab" aria-selected="true" data-tab="agents"><span class="ic">◉</span>Agents</button>
   <button role="tab" aria-selected="false" data-tab="check"><span class="ic">⚑</span>Check</button>
+  <button role="tab" aria-selected="false" data-tab="queue"><span class="ic">✓</span>Approve<span id="qBadge" class="badge" hidden></span></button>
   <button role="tab" aria-selected="false" data-tab="how"><span class="ic">≡</span>How</button>
 </nav>
 
@@ -475,6 +508,120 @@ $("tryPrice").onclick = () => { $("body").value = DEFAULT_BODY + "\n\nThe extra 
 $("tryDone").onclick  = () => { $("body").value = DEFAULT_BODY.replace("Primer applied to corridor walls.","The north corridor is 100% complete."); render(); };
 $("reset").onclick    = () => { $("body").value = DEFAULT_BODY; kindSel.value="daily_log"; roleSel.value="project_manager"; render(); };
 ["input","change"].forEach(ev => { $("body").addEventListener(ev,render); kindSel.addEventListener(ev,render); roleSel.addEventListener(ev,render); });
+
+// ===== approvals =====
+// The gate is a queue with a person at the end of it. That person is on a
+// jobsite holding a phone, so the release has to live here and not in a
+// terminal. The token stays in localStorage on this device — it is never
+// put in the URL, where it would end up in history and server logs.
+const TOKEN_KEY = "lumia.operator.token";
+let TOKEN = localStorage.getItem(TOKEN_KEY) || "";
+
+function authHeaders() { return { "Content-Type": "application/json", "X-Lumia-Token": TOKEN }; }
+
+function setBadge(n) {
+  const b = $("qBadge");
+  b.textContent = n > 9 ? "9+" : String(n);
+  b.hidden = !n;
+}
+
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, c =>
+    ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+}
+
+// What the operator is actually deciding about. The queue stores a tool call,
+// and the message body can be under any of several argument names depending
+// on which tool was held, so show the longest text rather than guess one key.
+function draftOf(args) {
+  const texts = Object.entries(args || {})
+    .filter(([, v]) => typeof v === "string" && v.length > 20)
+    .map(([k, v]) => [k, v])
+    .sort((a, b) => b[1].length - a[1].length);
+  return texts.length ? texts[0][1] : JSON.stringify(args || {}, null, 2);
+}
+
+function qMessage(text, kind) {
+  $("qOut").innerHTML = `<div class="verdict ${kind === "bad" ? "hold" : "pass"}"><h3>${esc(text)}</h3></div>`;
+}
+
+async function qLoad() {
+  if (!TOKEN) { $("qOut").innerHTML = ""; setBadge(0); return; }
+  try {
+    const r = await fetch("/api/approvals", { headers: authHeaders() });
+    if (r.status === 403) return qMessage("That token was not accepted.", "bad");
+    if (r.status === 503) return qMessage("Operator control is switched off on the server.", "bad");
+    if (!r.ok) return qMessage("Could not reach the queue.", "bad");
+
+    const { pending } = await r.json();
+    setBadge(pending.length);
+    $("qAuth").hidden = true;
+
+    if (!pending.length) {
+      $("qOut").innerHTML = `<div class="card"><p class="sub" style="margin:0">Nothing is waiting. Every message the agents wrote either cleared the gate or has already been decided.</p></div>`;
+      return;
+    }
+    $("qOut").innerHTML = pending.map(p => `
+      <div class="card appr" data-id="${esc(p.id)}">
+        <div class="who">${esc(p.agent || "agent")} › ${esc(p.tool)}</div>
+        <div class="why">${esc(p.reason)}</div>
+        <pre>${esc(draftOf(p.arguments))}</pre>
+        <label for="n-${esc(p.id)}">Note (optional)</label>
+        <input id="n-${esc(p.id)}" class="qnote" placeholder="why you decided this" />
+        <div class="btnrow">
+          <button class="ghost" data-act="approve" data-exec="1">Approve &amp; send</button>
+          <button class="ghost" data-act="approve">Approve only</button>
+          <button class="ghost" data-act="reject">Reject</button>
+        </div>
+      </div>`).join("");
+
+    document.querySelectorAll(".appr button").forEach(b => {
+      b.onclick = () => qDecide(b, b.closest(".appr").dataset.id, b.dataset.act, !!b.dataset.exec);
+    });
+  } catch { qMessage("Could not reach the server.", "bad"); }
+}
+
+async function qDecide(button, id, decision, execute) {
+  const card = button.closest(".appr");
+  // Disable the whole row, not just the button pressed. A double tap on a
+  // slow connection is the one way this sends the same message twice, and
+  // the server refuses the second one — but the operator should not have to
+  // find that out from an error.
+  card.querySelectorAll("button").forEach(b => (b.disabled = true));
+  button.textContent = execute ? "Sending…" : "Saving…";
+  const note = card.querySelector(".qnote").value;
+
+  try {
+    const r = await fetch("/api/approvals", {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ id, decision, note, execute }),
+    });
+    const body = await r.json();
+    if (!r.ok) throw new Error(body.error || "refused");
+    card.innerHTML = `<div class="who">${esc(body.decision.status)}</div>
+      <p class="sub" style="margin:6px 0 0">${
+        body.executed ? "Sent." : body.error ? esc(body.error)
+        : decision === "reject" ? "Rejected. Nothing was sent."
+        : "Approved. Not sent yet."}</p>`;
+    qLoad();
+  } catch (e) {
+    card.querySelectorAll("button").forEach(b => (b.disabled = false));
+    button.textContent = "Retry";
+    qMessage(e.message, "bad");
+  }
+}
+
+$("qUnlock").onclick = () => {
+  TOKEN = $("qToken").value.trim();
+  localStorage.setItem(TOKEN_KEY, TOKEN);
+  qLoad();
+};
+$("qForget").onclick = () => {
+  TOKEN = ""; localStorage.removeItem(TOKEN_KEY);
+  $("qToken").value = ""; $("qAuth").hidden = false; $("qOut").innerHTML = ""; setBadge(0);
+};
+if (TOKEN) { $("qToken").value = TOKEN; qLoad(); }
 
 // ===== engine probe =====
 fetch("/api/health").then(r => r.ok ? r.json() : null).then(h => {

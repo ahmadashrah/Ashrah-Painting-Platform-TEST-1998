@@ -6,11 +6,23 @@ and second implementations drift. When this server is running, the page
 stops using its own copy and asks the real one instead — the same
 `screen()` and `classify()` the agents go through.
 
-Deliberately read-only and stateless. Anything hosted is reachable by
-whoever has the URL, so the API exposes no project, client, contact or
-account data, and nothing here can send a message, write a record or spend
-a token. It answers two questions — *would this message need a human*, and
-*what may each agent do* — and both are computed from the request.
+The surface splits in two, and the split is the whole security model.
+
+**Open, and computed from the request.** Screening, the send gate, the
+agent roster, health. These expose no project, client, contact or account
+data, write nothing, and spend nothing. Anything hosted is reachable by
+whoever has the URL, so this is everything that is safe to be.
+
+**Token-gated, and able to act.** Running an agent, killing a run, reading
+step logs, and deciding approvals. These spend tokens, reveal what the
+company is doing, and — on an approved Level 3 action — send a real
+message to a real client. All of it stays off until `LUMIA_RUN_TOKEN` is
+set, because off is the only safe default for a public URL.
+
+The approval routes exist because the gate is not a filter, it is a queue
+with a person at the end of it. A held message that can only be released
+from a terminal is a message that does not go out: the work is on a
+jobsite, and the person who has to decide is holding a phone.
 
 Standard library only. This is an internal control panel, not a public
 service, and a zero-dependency server is one less thing to keep current.
@@ -39,6 +51,8 @@ from .config import SETTINGS
 from .domain.projects import CommKind, RecipientRole
 from .facade import PURPOSE
 from .runner import Runner
+from .tools import Toolbox
+from .workspace import Workspace
 
 log = logging.getLogger("lumia.server")
 
@@ -107,6 +121,38 @@ def agent_roster() -> list[dict[str, Any]]:
             }
         )
     return sorted(roster, key=lambda a: (a["family"], a["role"]))
+
+
+def integration_status() -> dict[str, Any]:
+    """Which integrations are live, and what is still missing to make one live.
+
+    Never a key, never a fragment of one — only the *names* of variables
+    that are still unset. Someone who has just pasted six keys into a host's
+    variables needs to know which of them landed, and the alternative is
+    reading container logs on a phone.
+
+    An unconfigured integration is not an error. It runs in mock mode and
+    flags its results as simulated, which is why this reports `live` rather
+    than `ok`: the deployment is working either way, it is just working
+    against a smaller world.
+    """
+    services = []
+    for name, credentials in sorted(SETTINGS.services.items()):
+        services.append({
+            "name": name,
+            "live": credentials.configured and not credentials.missing_vars,
+            "needs": credentials.missing_vars,
+        })
+    return {
+        "model": SETTINGS.model,
+        "provider": SETTINGS.provider,
+        "model_available": bool(SETTINGS.anthropic_api_key),
+        "runs_enabled": runs_enabled(),
+        "operator_control": bool(RUN_TOKEN),
+        "services": services,
+        "live": sorted(s["name"] for s in services if s["live"]),
+        "simulated": sorted(s["name"] for s in services if not s["live"]),
+    }
 
 
 def gate_verdict(kind: str, recipient_role: str, subject: str, body: str) -> dict[str, Any]:
@@ -197,6 +243,23 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/agents":
             return self._send(200, {"agents": agent_roster()})
 
+        if path == "/api/status":
+            return self._send(200, integration_status())
+
+        if path == "/api/approvals":
+            # The queue holds drafted message bodies, recipient names and
+            # what the agent wanted to do with them — the most sensitive
+            # thing this server can return, and gated accordingly.
+            if not RUN_TOKEN:
+                return self._send(503, {
+                    "error": "the approval queue is not reachable over HTTP",
+                    "fix": "set LUMIA_RUN_TOKEN in the host's variables to enable it",
+                })
+            if not _token_ok(self, {}):
+                return self._send(403, {"error": "wrong or missing token"})
+            queue = Workspace.build(SETTINGS).approvals
+            return self._send(200, {"pending": queue.pending(), "count": len(queue.pending())})
+
         if path.startswith("/api/steps"):
             # Steps name tools, levels and reasons — operational detail, not
             # client data — but they are still gated behind the run token so a
@@ -238,6 +301,9 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/run":
             return self._run(payload)
 
+        if path == "/api/approvals":
+            return self._decide(payload)
+
         if path == "/api/kill":
             if not RUN_TOKEN:
                 return self._send(503, {"error": "operator control over HTTP is disabled",
@@ -251,6 +317,68 @@ class Handler(BaseHTTPRequestHandler):
                 reference, reason=str(payload.get("reason") or "stopped by operator")))
 
         return self._send(404, {"error": f"no route {path}"})
+
+    def _decide(self, payload: dict[str, Any]) -> None:
+        """Approve or reject a held Level 3 action, and optionally perform it.
+
+        This is the one route that can put a real message in front of a real
+        client, so it refuses every ambiguity rather than guessing: an
+        unrecognised decision is a 400, not a default, and `execute` has to
+        be asked for. Approving without executing is a legitimate outcome —
+        it records the decision and leaves the sending for later.
+        """
+        if not RUN_TOKEN:
+            return self._send(503, {
+                "error": "deciding approvals over HTTP is disabled",
+                "fix": "set LUMIA_RUN_TOKEN in the host's variables to enable it",
+            })
+        if not _token_ok(self, payload):
+            return self._send(403, {"error": "wrong or missing token"})
+
+        request_id = str(payload.get("id") or "").strip()
+        decision = str(payload.get("decision") or "").strip().lower()
+        if not request_id:
+            return self._send(400, {"error": "name the approval to decide"})
+        if decision not in ("approve", "reject"):
+            return self._send(400, {"error": "decision must be 'approve' or 'reject'"})
+
+        workspace = Workspace.build(SETTINGS)
+        record = workspace.approvals.decide(
+            request_id,
+            approved=decision == "approve",
+            note=str(payload.get("note") or ""),
+            # Whoever holds the token is the operator. There are no accounts
+            # here, so claiming to know more than that would be a fiction in
+            # a field that exists precisely to say who decided.
+            by=str(payload.get("by") or "operator"),
+        )
+        if "error" in record:
+            return self._send(404, record)
+
+        result: Any = None
+        if decision == "approve" and bool(payload.get("execute")):
+            # The approval id travels with the call so the action itself
+            # records what cleared it.
+            arguments = {**record["arguments"], "approval_id": record["id"]}
+            try:
+                result = Toolbox(workspace).call(record["tool"], arguments)
+            except Exception as exc:  # noqa: BLE001 - a failed send must not 500
+                # The decision is already written. Losing that because the
+                # send failed would leave a message someone approved twice.
+                log.exception("approved action %s failed", record["id"])
+                return self._send(200, {
+                    "decision": record,
+                    "executed": False,
+                    "error": f"{type(exc).__name__}: {exc}",
+                })
+            workspace.approvals.mark_executed(
+                record["id"], result if isinstance(result, dict) else {"result": result})
+
+        return self._send(200, {
+            "decision": record,
+            "executed": result is not None,
+            "result": result,
+        })
 
     def _run(self, payload: dict[str, Any]) -> None:
         """Run one agent, cold. Off unless a token is configured and presented."""
