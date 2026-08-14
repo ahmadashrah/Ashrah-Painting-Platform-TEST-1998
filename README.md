@@ -371,121 +371,6 @@ recorded with `timed_out` set so it is visible in `lumia runs` afterwards.
 
 ---
 
-## The operator's window
-
-Every step a run takes is an event, and an operator can watch them live or
-read them back afterwards.
-
-```bash
-python -m lumia.cli watch                 # live, every run
-python -m lumia.cli watch RUN-000042      # live, one run
-python -m lumia.cli steps RUN-000042      # what it did, after the fact
-```
-
-```
-01:36:12.824 RUN-000042  run.started      task=order primer number=42
-01:36:12.825 RUN-000042  phase.started    phase=gather index=1 of=3
-01:36:12.825 RUN-000042  turn.started     turn=1
-01:36:12.825 RUN-000042  model.replied    turn=1 stop_reason=tool_use tool_calls=1
-01:36:12.825 RUN-000042  tool.proposed    tool=place_material_order arguments={…}
-01:36:12.826 RUN-000042  gate.decided     tool=place_material_order level=3 reason=…
-01:36:12.826 RUN-000042  tool.gated       tool=place_material_order approval_id=appr_…
-01:36:12.827 RUN-000042  run.finished     actions=1 held=1 timed_out=False killed=False
-```
-
-The two lines worth watching are `gate.decided` and `tool.gated`: what the
-agent asked to do, what the harness decided, and why.
-
-**Attaching your own hook** takes one call. It sees everything, including
-runs started by code you did not write and agents that do not exist yet:
-
-```python
-from lumia.observability import HOOKS
-
-HOOKS.subscribe(lambda event: my_dashboard.push(event.to_dict()), name="ops")
-```
-
-Two rules protect the run from the hook. A subscriber that raises is logged
-and skipped — an operator's broken dashboard cannot take down the crew
-dispatch, and a test asserts a later hook still fires after an earlier one
-throws. And payloads are trimmed before recording: a tool result can be 60KB,
-and the step log is for watching, not for storing.
-
-## Stopping a run
-
-Two mechanisms, because they fail differently.
-
-**The kill switch** is for a run doing the wrong thing. It is file-based, so
-it reaches a run in another process — a scheduled cycle, a web request, a
-worker:
-
-```bash
-python -m lumia.cli kill RUN-000042 --reason "wrong recipient"
-python -m lumia.cli kill ALL --reason "stop everything"
-python -m lumia.cli kill ALL --release
-```
-
-The run stops at its next step and says what had already happened. A
-reference is never reused, so a request can only ever mean the run it names —
-including one armed before that run starts.
-
-**The watchdog** is for a run that has stopped policing itself. The time
-budget is cooperative: it works because the loop checks it. That covers a
-slow run, not one blocked *below* the loop — a socket opened without a
-timeout, a library that swallowed the one we passed, a retry buried in a
-vendor SDK. A timer signal interrupts the blocked call itself, 15 seconds
-past the budget, so the clean stop normally wins the race. Measured: a call
-that would have blocked for 60 seconds is interrupted after 5.
-
-It needs the main thread of a POSIX process. Under a thread pool it does
-nothing, which is exactly why the cooperative checks sit at three points
-rather than being left to a watchdog that may not be there.
-
-Both are recorded. A killed or interrupted run keeps its number, its step log
-and its place in `lumia runs`.
-
----
-
-## No communication takes longer than 120 seconds
-
-A crew is at a locked door, a client leaves site at five, a supplier's
-cut-off is in ten minutes. A message that arrives late has partly failed even
-if the wording was perfect, so ordering paint, sending a log, assigning an
-employee and drafting a message all carry a hard budget rather than a hope.
-
-Enforced at three points, because one is not enough:
-
-| | |
-|---|---|
-| **Between turns** | the loop will not start another model call on a spent budget |
-| **Before a tool call** | no new outbound work begins with no time left |
-| **Inside each HTTP call** | every request gets what is actually left, and retries stop when there is no room for another attempt |
-
-That third one is where the budget was really going. A send with three
-retries at twenty seconds each could take 61 seconds on its own, and Whisper
-was allowed 120 — a single recording could have swallowed the whole budget.
-Both now size themselves against the run's remaining time.
-
-What it deliberately does **not** do is abort a request already in flight. A
-send cancelled mid-write may still have been delivered, and a message the
-record shows as unsent but the client received is worse than one that
-finishes four seconds late. The budget stops new work; it never interrupts
-work already committed.
-
-When the limit is reached the run stops and says exactly what happened:
-
-```
-Stopped at the 120-second limit for communication, before running
-send_communication. Completed: build_daily_log, compose_daily_log.
-Anything not listed did not happen.
-```
-
-Growth work gets 600 seconds — researching an account properly is worth more
-than researching it quickly. Both are overridable with
-`LUMIA_COMMS_BUDGET_SECONDS` and `LUMIA_GROWTH_BUDGET_SECONDS`.
-
----
-
 ## Every run has a number
 
 A number is issued at creation — before the agent takes its first turn — so a
@@ -546,13 +431,41 @@ data, and nothing on it can send a message, write a record or spend a token.
 | `POST /api/screen` | `{text, recipient_role, subject}` → would this need a human |
 | `POST /api/gate` | `{kind, recipient_role, body}` → the real send-gate verdict |
 
-**Deploying it.** `Procfile` and `railway.json` are committed, and the app
-is standard-library only, so a host needs no build step beyond installing
-`requirements.txt`. It binds `PORT` and `HOST` from the environment.
+**Deploying it.** The server is standard-library only, so a host needs no
+build step beyond installing `requirements.txt`. It binds `PORT` and `HOST`
+from the environment, answers `/api/health`, and shuts down on `SIGTERM`
+instead of being killed mid-request on every redeploy.
 
 ```bash
 railway login && railway init && railway up
 ```
+
+Four files exist because of one deploy that failed for four separate
+reasons, each hidden behind the one before it:
+
+| | |
+|---|---|
+| `railpack.json` | Railway's builder is Railpack, and it does not read `railway.json`'s build config. Without this it reports **"No start command detected"** and never gets as far as running anything. |
+| `main.py` | Railpack installs `requirements.txt`, not this project, so `python -m lumia.server` raises `ModuleNotFoundError`. This puts `src` on the path first, and turns stdout line-buffered so logs appear while the container is alive rather than after it dies. |
+| `.python-version` | Otherwise the builder picks a Python and the deploy is running a version nobody chose. |
+| `Procfile` | For hosts that read one instead. All three name the same command: `python main.py`. |
+
+Two variables are worth setting beyond the API keys:
+
+- **`ASHRAH_DATA_DIR`**, pointed at an attached volume. Without it the
+  container's own filesystem holds every project, sent message, approval and
+  run number — all of it erased on the next redeploy, including the run
+  counter, so numbers restart at 1. The server warns about this at startup
+  rather than letting it be discovered later.
+- **`TZ`** (`America/Toronto`), because a daily log dated by a container
+  running UTC rolls over at 8pm local and files the evening's work under
+  tomorrow.
+
+The first thing in the logs is what the deployment actually is — node, agent
+count, model, whether its key is set, contract fingerprint, data directory
+and whether it persists, today's date and the clock it came from. A container
+that boots and then behaves oddly is usually misconfigured, and the answer is
+normally in those lines.
 
 Setting `ANTHROPIC_API_KEY` in the host's variables is what makes the agents
 able to reason; without it the deployment still serves the control room and

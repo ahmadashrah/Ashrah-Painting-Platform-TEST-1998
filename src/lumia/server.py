@@ -25,6 +25,9 @@ import hmac
 import json
 import logging
 import os
+import signal
+import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -39,7 +42,28 @@ from .runner import Runner
 
 log = logging.getLogger("lumia.server")
 
-PAGE = Path(__file__).resolve().parents[2] / "docs" / "index.html"
+def _find_page() -> Path | None:
+    """Locate the control room page, wherever this is deployed from.
+
+    `parents[2]/docs` is right for a repo checkout and wrong for an
+    installed package, where it resolves into site-packages. A deploy that
+    pip-installs the project then serves a 500 on `/` while the health check
+    still returns 200 — up by every automated measure, broken to anyone who
+    opens it.
+    """
+    here = Path(__file__).resolve()
+    candidates = [
+        here.parents[2] / "docs" / "index.html",   # repo checkout: src/lumia/..
+        Path.cwd() / "docs" / "index.html",        # deployed working directory
+        here.parent / "docs" / "index.html",       # shipped as package data
+    ]
+    for candidate in candidates:
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+PAGE = _find_page()
 
 #: Requests larger than this are refused rather than read into memory.
 MAX_BODY_BYTES = 64 * 1024
@@ -147,9 +171,16 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?", 1)[0].rstrip("/") or "/"
 
         if path == "/":
-            if not PAGE.is_file():
-                return self._send(500, {"error": f"page not found at {PAGE}"})
-            return self._send(200, PAGE.read_bytes(), "text/html; charset=utf-8")
+            # Re-resolved per request: the page may be findable now even if it
+            # was not at import time, and a stale miss should not be permanent.
+            page = PAGE or _find_page()
+            if page is None:
+                return self._send(500, {
+                    "error": "the control room page was not found",
+                    "looked_in": [str(Path.cwd() / "docs"), str(Path(__file__).resolve().parents[2] / "docs")],
+                    "fix": "deploy with docs/index.html present, or run from the repository root",
+                })
+            return self._send(200, page.read_bytes(), "text/html; charset=utf-8")
 
         if path == "/api/health":
             return self._send(200, {
@@ -262,20 +293,79 @@ class Handler(BaseHTTPRequestHandler):
         })
 
 
+def startup_report() -> dict[str, Any]:
+    """What this deployment actually is, printed where an operator will see it.
+
+    A container that boots and then behaves unexpectedly is usually
+    misconfigured rather than broken, and the answer is almost always in
+    these six lines. Printing them costs nothing and saves reading the
+    source to find out whether a key was set.
+    """
+    from datetime import date, datetime
+
+    from .contract import current_contract
+
+    explicit_data_dir = bool(os.environ.get("ASHRAH_DATA_DIR"))
+    return {
+        "node": os.environ.get("LUMIA_NODE", "") or "hostname",
+        "agents": len(ROLE_TOOLS),
+        "model": SETTINGS.model,
+        "model_key_set": bool(SETTINGS.anthropic_api_key),
+        "runs_over_http": runs_enabled(),
+        "contract": current_contract(SETTINGS).fingerprint(),
+        "data_dir": str(SETTINGS.data_dir),
+        "data_is_persistent": explicit_data_dir,
+        "today": date.today().isoformat(),
+        "clock": datetime.now().astimezone().tzname() or "UTC",
+        "page_found": _find_page() is not None,
+    }
+
+
 def main() -> int:
-    logging.basicConfig(level=logging.INFO, format="%(message)s")
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+
     # Railway and most hosts inject PORT; bind all interfaces so the
     # platform's router can reach the container.
     port = int(os.environ.get("PORT", "8000"))
     host = os.environ.get("HOST", "0.0.0.0")
     server = ThreadingHTTPServer((host, port), Handler)
-    log.info("Lumia control room on http://%s:%s  (%d agents)", host, port, len(ROLE_TOOLS))
+    server.daemon_threads = True
+
+    report = startup_report()
+    log.info("Lumia control room on http://%s:%s", host, port)
+    for key, value in report.items():
+        log.info("  %-18s %s", key, value)
+
+    if not report["data_is_persistent"]:
+        log.warning(
+            "  NOTE  ASHRAH_DATA_DIR is not set, so %s lives in the container and is "
+            "erased on every redeploy — projects, sent messages, approvals and run "
+            "numbers with it. Attach a volume and point ASHRAH_DATA_DIR at it.",
+            report["data_dir"],
+        )
+    if not report["page_found"]:
+        log.warning("  NOTE  docs/index.html was not found; the control room page will 500.")
+
+    # Railway sends SIGTERM on every redeploy and scale-down. Without a
+    # handler the process is killed outright partway through whatever it was
+    # doing; with one it stops accepting work and closes the socket cleanly.
+    def shutdown(signum: int, _frame: Any) -> None:
+        log.info("received %s — shutting down", signal.Signals(signum).name)
+        threading.Thread(target=server.shutdown, daemon=True).start()
+
+    for received in (signal.SIGTERM, signal.SIGINT):
+        try:
+            signal.signal(received, shutdown)
+        except ValueError:  # pragma: no cover - not the main thread
+            pass
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         log.info("stopping")
     finally:
         server.server_close()
+    log.info("stopped cleanly")
     return 0
 
 

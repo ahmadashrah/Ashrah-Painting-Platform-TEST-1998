@@ -1,1 +1,1 @@
-web: PYTHONPATH=src python -m lumia.server
+web: python main.py

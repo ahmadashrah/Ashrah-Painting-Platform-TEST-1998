@@ -42,6 +42,21 @@ def provider_for(model: str) -> str:
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
+#: True when running from a source checkout rather than an installed package.
+IN_CHECKOUT = (PROJECT_ROOT / "src" / "lumia").is_dir()
+
+
+def default_data_dir() -> Path:
+    """Where agent state lives when ASHRAH_DATA_DIR is not set.
+
+    In a checkout that is `./data` beside the source. Installed, the same
+    expression resolves inside site-packages — which is the wrong place on
+    every count: it is ephemeral on a container host, often read-only, and
+    shared between every project using that interpreter. Fall back to the
+    working directory, which on a deployment is the app root.
+    """
+    return (PROJECT_ROOT if IN_CHECKOUT else Path.cwd()) / "data"
+
 
 def _load_dotenv(path: Path) -> None:
     """Minimal .env loader so we don't take a python-dotenv dependency."""
@@ -121,8 +136,24 @@ class Settings:
 
 
 def load_settings() -> Settings:
-    data_dir = Path(os.environ.get("ASHRAH_DATA_DIR", PROJECT_ROOT / "data"))
-    data_dir.mkdir(parents=True, exist_ok=True)
+    data_dir = Path(os.environ.get("ASHRAH_DATA_DIR") or default_data_dir())
+    try:
+        data_dir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # Importing the package must not explode because a directory could
+        # not be made. Fall back to a temporary one and say so loudly — a
+        # deployment that cannot persist should still boot and report.
+        import tempfile
+
+        fallback = Path(tempfile.gettempdir()) / "lumia-data"
+        fallback.mkdir(parents=True, exist_ok=True)
+        print(
+            f"warning: cannot write to {data_dir} ({exc}); using {fallback}. "
+            "Set ASHRAH_DATA_DIR to a writable path — on Railway, attach a volume, "
+            "or state will be lost on every redeploy.",
+            flush=True,
+        )
+        data_dir = fallback
 
     services = {
         # OpenAI: speech-to-text for field voice notes, vision for submitted
