@@ -3,6 +3,7 @@
 Growth:
 
     lumia status
+    lumia test-email owner@example.com
     lumia seed
     lumia pipeline
     lumia run "find property managers in Calgary with upcoming turnovers"
@@ -63,11 +64,70 @@ def _report_run(run: Any) -> None:
     print(f"\n{run.reply}\n")
 
 
+def _test_email(ws: Any, to: str) -> int:
+    """Send one real email and say plainly whether it left the building.
+
+    This exists because the honest answer is otherwise hard to get. An
+    unconfigured provider does not fail — it mocks, and the mock returns
+    `{"status": "queued"}`, which reads exactly like a send. Someone
+    checking whether their new key works can be told "queued" by a system
+    that never opened a socket. So the unconfigured case is refused here
+    rather than reported, and a real send prints the provider's own answer.
+    """
+    from .integrations.base import IntegrationError
+
+    settings = ws.settings
+    if not settings.company_email:
+        print("COMPANY_EMAIL is not set — refusing to send from an unknown address.")
+        return 1
+
+    credentials = settings.service("email")
+    provider = credentials.extra.get("provider") or "sendgrid"
+    if not credentials.configured:
+        print(f"No email key is set, so nothing would be sent — only mocked. "
+              f"Set {credentials.key_var} in the host's variables.")
+        return 1
+
+    print(f"provider  {provider}")
+    print(f"from      {settings.company_email}")
+    print(f"to        {to}")
+
+    try:
+        result = ws.email.send(
+            to=to,
+            subject=f"{settings.company_name} — Lumia email check",
+            body=(
+                "This is Lumia's email check.\n\n"
+                f"If you are reading it, {provider} accepted a message from "
+                f"{settings.company_email} and delivered it. Outbound email is working.\n"
+            ),
+            from_email=settings.company_email,
+        )
+    except IntegrationError as exc:
+        # The provider's own words. Nearly every failure here is a sending
+        # address the provider has not verified, and its message says so.
+        print(f"\nrefused by {provider}: {exc}")
+        return 1
+
+    if result.get("_mocked"):
+        print("\nmocked — nothing was sent. The key is not reaching the process.")
+        return 1
+
+    print(f"\naccepted by {provider}: {json.dumps(result, default=str)}")
+    print("Check the inbox, and the spam folder.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="lumia", description="Lumia B2B growth agent")
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("status", help="show model and integration status")
+
+    test_email = sub.add_parser(
+        "test-email", help="send one real email to yourself to prove the provider works")
+    test_email.add_argument("to", help="the address to send to")
+
     sub.add_parser("seed", help="load demo accounts so the pipeline is explorable")
     sub.add_parser("pipeline", help="print the pipeline rollup")
 
@@ -142,6 +202,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "status":
         _print(Lumia(settings=ws.settings).status())
         return 0
+
+    if args.command == "test-email":
+        return _test_email(ws, args.to)
 
     if args.command in {"agents", "screen", "gate", "runs", "watch", "kill", "steps", "fleet"}:
         return _facade(ws, args)

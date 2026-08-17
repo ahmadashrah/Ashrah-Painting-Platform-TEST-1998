@@ -781,7 +781,7 @@ gate queue. Point `ASHRAH_DATA_DIR` elsewhere to isolate environments.
 | `COMPANY_EMAIL` | outbound email is refused without it |
 | `CRM_API_KEY` | blank uses the built-in local store |
 | `OPENAI_API_KEY` | Whisper transcription, photo vision, embeddings; also needed if `ASHRAH_MODEL` is a GPT model |
-| `SENDGRID_API_KEY` | outreach and project email |
+| `RESEND_API_KEY` / `SENDGRID_API_KEY` | outreach and project email — set either one; Resend wins if both |
 | `TWILIO_*` | site coordination by text — all three vars required |
 | `SEARCH_API_KEY` | market research |
 | `CONSTRUCTION_DATA_API_KEY` | permits, tenders, project awards |

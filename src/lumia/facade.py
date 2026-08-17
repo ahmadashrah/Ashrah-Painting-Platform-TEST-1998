@@ -179,7 +179,8 @@ class Lumia:
         }
         unlocks = {
             "crm": "mirroring the record to a hosted CRM (the local store works without it)",
-            "email": "actually delivering email — daily logs, client updates, supplier orders",
+            "email": "actually delivering email — daily logs, client updates, supplier orders "
+                     "(RESEND_API_KEY or SENDGRID_API_KEY; either one is enough)",
             "sms": "actually delivering texts — arrival notices, access, crew dispatch",
             "calendar": "putting meetings and site walks on a real calendar",
             "search": "real market research instead of simulated results",

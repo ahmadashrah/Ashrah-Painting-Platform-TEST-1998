@@ -8,20 +8,41 @@ from .base import Integration
 
 
 class EmailService(Integration):
-    """SendGrid-shaped transactional email."""
+    """Transactional email, over Resend or SendGrid.
+
+    Which provider a deployment can get a key for is not this code's
+    decision, so both are supported. They differ in more than a hostname —
+    Resend takes a flat body at `/emails`, SendGrid a nested one at
+    `/mail/send` — and the branch is kept visible here rather than hidden
+    behind a shared schema that would fit neither.
+
+    Neither returns the same success shape either: Resend answers with a
+    message id, SendGrid with an empty 202. Both are passed back as they
+    came. `mark_sent` treats a delivery as failed only on an explicit error,
+    so a provider that says little is not mistaken for one that failed.
+    """
+
+    @property
+    def provider(self) -> str:
+        return self.credentials.extra.get("provider") or "sendgrid"
 
     def send(self, to: str, subject: str, body: str, from_email: str) -> dict[str, Any]:
+        mock = {"status": "queued", "to": to, "subject": subject, "preview": body[:400]}
+
+        if self.provider == "resend":
+            return self.request(
+                "POST",
+                "/emails",
+                json={"from": from_email, "to": [to], "subject": subject, "text": body},
+                mock=mock,
+            )
+
         payload = {
             "personalizations": [{"to": [{"email": to}], "subject": subject}],
             "from": {"email": from_email},
             "content": [{"type": "text/plain", "value": body}],
         }
-        return self.request(
-            "POST",
-            "/mail/send",
-            json=payload,
-            mock={"status": "queued", "to": to, "subject": subject, "preview": body[:400]},
-        )
+        return self.request("POST", "/mail/send", json=payload, mock=mock)
 
 
 class SMSService(Integration):

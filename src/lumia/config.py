@@ -112,6 +112,45 @@ def _service(name: str, key_var: str, url_var: str, default_url: str, **extra_va
     )
 
 
+def _email_service() -> ServiceCredentials:
+    """Email, from whichever provider has a key.
+
+    Resend and SendGrid are not one service behind two hostnames. They take
+    different keys, and they take different payload shapes, so which one is
+    in play has to be decided once — here — and carried with the credentials
+    rather than guessed at the call site.
+
+    Resend wins when both are set. A key someone has just pasted in should
+    not lose to one left over from an earlier attempt, and a deployment
+    quietly sending through the provider you thought you had replaced is
+    worse than one that refuses.
+    """
+    if os.environ.get("RESEND_API_KEY"):
+        return ServiceCredentials(
+            name="email",
+            api_key=os.environ["RESEND_API_KEY"],
+            base_url=os.environ.get("RESEND_BASE_URL") or "https://api.resend.com",
+            extra={"provider": "resend"},
+            key_var="RESEND_API_KEY",
+        )
+    if os.environ.get("SENDGRID_API_KEY"):
+        return ServiceCredentials(
+            name="email",
+            api_key=os.environ["SENDGRID_API_KEY"],
+            base_url=os.environ.get("SENDGRID_BASE_URL") or "https://api.sendgrid.com/v3",
+            extra={"provider": "sendgrid"},
+            key_var="SENDGRID_API_KEY",
+        )
+    # Neither is set. `status` names exactly one variable to add, so it names
+    # the shorter path to a working sender.
+    return ServiceCredentials(
+        name="email",
+        base_url="https://api.resend.com",
+        extra={"provider": "resend"},
+        key_var="RESEND_API_KEY",
+    )
+
+
 @dataclass(frozen=True)
 class Settings:
     anthropic_api_key: str | None
@@ -162,8 +201,8 @@ def load_settings() -> Settings:
         "openai": _service("openai", "OPENAI_API_KEY", "OPENAI_BASE_URL", "https://api.openai.com/v1"),
         # Record of truth for accounts, contacts and pipeline.
         "crm": _service("crm", "CRM_API_KEY", "CRM_BASE_URL", "https://api.example-crm.com/v1"),
-        # Outreach email.
-        "email": _service("email", "SENDGRID_API_KEY", "SENDGRID_BASE_URL", "https://api.sendgrid.com/v3"),
+        # Outreach and project email, over Resend or SendGrid.
+        "email": _email_service(),
         # SMS — used sparingly in B2B, mostly for site coordination.
         "sms": _service(
             "sms",

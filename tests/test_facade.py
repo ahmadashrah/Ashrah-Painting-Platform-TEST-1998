@@ -212,8 +212,8 @@ def test_the_key_report_names_the_variable_to_set(offline):
     assert keys["ANTHROPIC_API_KEY"]["set"] is False
     assert keys["ANTHROPIC_API_KEY"]["required"] is True
     # Not just "email is mocked" — the exact variable.
-    assert "SENDGRID_API_KEY" in keys
-    assert keys["SENDGRID_API_KEY"]["unlocks"]
+    assert "RESEND_API_KEY" in keys
+    assert keys["RESEND_API_KEY"]["unlocks"]
 
 
 def test_a_multi_variable_service_lists_what_is_still_missing():
